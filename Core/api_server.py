@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import asyncio
+import secrets
 import telemetry
 import BypssEng
 
@@ -16,7 +17,7 @@ else:
 
 INDEX_HTML_PATH = os.path.join(ROOT_DIR, "Core", "index.html")
 
-DASHBOARD_TOKEN = "secret-dashboard-token-123"
+DASHBOARD_TOKEN = secrets.token_hex(16)
 
 class WebSocketBroadcaster:
     def __init__(self):
@@ -41,8 +42,10 @@ broadcaster = WebSocketBroadcaster()
 
 @web.middleware
 async def auth_middleware(request, handler):
-    if request.path.startswith('/api'):
+    if request.path.startswith('/api') or request.path == '/ws':
         token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        if not token and request.path == '/ws':
+            token = request.query.get('token', '')
         if token != DASHBOARD_TOKEN:
             return web.json_response({"error": "Unauthorized"}, status=401)
     return await handler(request)
@@ -55,7 +58,7 @@ async def websocket_handler(request):
     try:
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.ERROR:
-                print('ws connection closed with exception %s' % ws.exception())
+                print(f'ws connection closed with exception {ws.exception()}')
     finally:
         broadcaster.remove_client(ws)
     return ws
@@ -81,6 +84,10 @@ async def get_configs(request):
     cfg = BypssEng.load_unified_config()
     return web.json_response(cfg)
 
+async def get_history(request):
+    history = await telemetry.get_history(50)
+    return web.json_response(history)
+
 async def test_config_api(request):
     data = await request.json()
     link = data.get("link")
@@ -103,7 +110,10 @@ async def create_app():
         web.get('/api/status', get_status),
         web.get('/api/logs', get_logs),
         web.get('/api/configs', get_configs),
+        web.get('/api/history', get_history),
         web.post('/api/configs/test', test_config_api),
     ])
         
     return app
+
+
