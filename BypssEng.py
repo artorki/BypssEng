@@ -105,7 +105,8 @@ _port_sockets = []
 LOCK_FILE = os.path.join(DATA_DIR, "engine.lock")
 lock_fd = None
 
-DEEP_SCAN_INTERVAL = 3600
+DIAGNOSE_ONLY = False
+DEEP_SCAN_INTERVAL = 600
 
 def random_spider_x():
     paths = ["/", "", "/index.html", "/home", "/api/v1/status", "/static/img/logo.png", "/robots.txt", "/search?q=", "/en/", "/blog/"]
@@ -194,10 +195,9 @@ CONFIG = {
     "targets": {
         "external_ips": ["1.1.1.1", "8.8.8.8", "9.9.9.9"],
         "internal_ips": ["217.218.127.127", "217.218.155.155"],
-        "portquiz_ip": "193.32.161.165",
         "cf_ip": "104.16.123.96",
         "google_ip": "142.250.190.46",
-        "national_speed_urls": ["https://speedtest.rahkasam.ir/5MB.bin"],
+        "national_speed_urls": ["https://speedtest.rahkasam.ir/5MB.bin", "http://speedtest.ircf.net/5MB.bin", "http://speedtest.pishgaman.net/5MB.bin"],
         "international_speed_urls": ["https://speed.cloudflare.com/__down?bytes=5000000", "https://speed.hetzner.de/5MB.bin", "https://cachefly.cachefly.net/5mb.test"],
         "doh_endpoints": ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query", "https://9.9.9.9/dns-query"],
         "captive_portal_url": "http://detectportal.firefox.com/canonical.html",
@@ -205,13 +205,11 @@ CONFIG = {
         "dns_candidates": ["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "9.9.9.10", "94.140.14.14", "94.140.15.15", "217.218.127.127", "217.218.155.155", "91.92.255.244"]
     },
     "thresholds": {"speed_kbps_severe": 20, "speed_kbps_slow": 500, "speed_test_samples": 3, "speed_test_bytes": 2000000, "speed_test_max_duration": 5},
-
     "cdn_ranges": {
         "cloudflare": [(104,16), (172,64), (162,159), (104,17), (104,18)],
         "gcore": [(92,223), (185,188), (45,133)],
         "aws": ["18.160.0.1", "13.224.0.1", "99.84.0.1"]
-    }
-}
+    }}
 
 class Colors:
     HEADER = '\033[95m'; OKBLUE = '\033[94m'; OKCYAN = '\033[96m'; OKGREEN = '\033[92m'; WARNING = '\033[93m'; FAIL = '\033[91m'; ENDC = '\033[0m'; BOLD = '\033[1m'
@@ -302,24 +300,18 @@ def cleanup_child_processes():
     if dnstt_proc and dnstt_proc.returncode is None:
         try:
             dnstt_proc.terminate()
-            time.sleep(0.5)
-            if dnstt_proc.returncode is None:
-                dnstt_proc.kill()
-        except Exception:
-            pass
-        finally:
-            dnstt_proc = None
+            try: dnstt_proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired: dnstt_proc.kill()
+        except Exception: pass
+        finally: dnstt_proc = None
 
     if xray_proc and xray_proc.returncode is None:
         try:
             xray_proc.terminate()
-            time.sleep(0.5)
-            if xray_proc.returncode is None:
-                xray_proc.kill()
-        except Exception as e:
-            log(f"Error during process cleanup: {e}", "WARN")
-        finally:
-            xray_proc = None
+            try: xray_proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired: xray_proc.kill()
+        except Exception as e: log(f"Error during process cleanup: {e}", "WARN")
+        finally: xray_proc = None
 
     try:
         state = load_state()
@@ -1001,27 +993,24 @@ async def test_dns_layer():
 
 async def test_vpn_ports():
     log("Phase 3: Checking VPN Ports...", "HEADER")
-
-    portquiz_reachable = False
+    cf_ip = CONFIG["targets"]["cf_ip"]
     try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(CONFIG["targets"]["portquiz_ip"], 443), timeout=5)
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(cf_ip, 443), timeout=5)
         writer.close(); await writer.wait_closed()
-        portquiz_reachable = True
-    except:
-        pass
-
-    if not portquiz_reachable:
-        log("  -> portquiz.net is unreachable. Port test skipped.", "WARN")
+    except Exception:
+        log("  -> Cloudflare IP is unreachable. Port test skipped.", "WARN")
         return 'unknown'
 
     async def check_port(port):
         try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(CONFIG["targets"]["portquiz_ip"], port), timeout=5)
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(cf_ip, port), timeout=5)
             writer.close(); await writer.wait_closed(); return port, True
         except asyncio.TimeoutError: return port, 'timeout'
+        except ConnectionRefusedError: return port, False
         except Exception as e:
             logger.debug(f"Port check error: {e}")
             return port, False
+            
     results = await asyncio.gather(*[check_port(p) for p in [1194, 1701, 1723, 443, 80]])
     blocked = [p for p, res in results if res is False]
     timed_out = [p for p, res in results if res == 'timeout']
@@ -1344,6 +1333,10 @@ async def get_current_dns():
         return "EMPTY"
 
 async def apply_system_dns():
+    if DIAGNOSE_ONLY:
+        log("Diagnose-only mode active. Skipping system DNS changes.", "INFO")
+        return True
+
     if not is_root_or_admin(): return False
     interface = await get_default_interface()
     if not interface: return False
@@ -1406,13 +1399,10 @@ async def apply_system_dns():
 
 async def restore_system_dns():
     state = load_state()
-    if not state.get('dns_changed'): 
-        return True
+    if not state.get('dns_changed'): return True
         
     interface = state.get('interface')
-    if not interface:
-        interface = await get_default_interface()
-        
+    if not interface: interface = await get_default_interface()
     if not interface:
         log("Cannot determine network interface to restore DNS.", "WARN")
         return False
@@ -1423,13 +1413,12 @@ async def restore_system_dns():
         if system == 'windows':
             try:
                 dns_data = json.loads(original_dns)
-            except:
-                dns_data = {
-                    "v4_mode": "DHCP", 
-                    "v4_servers": [], 
-                    "v6_mode": "DHCP", 
-                    "v6_servers": []
-                }
+            except Exception:
+                log("CRITICAL: Original DNS backup was empty or corrupted. Cannot safely restore DNS automatically!", "ERROR")
+                state['dns_changed'] = False
+                state['dns_backed_up'] = False
+                save_state(state)
+                return False
                 
             if dns_data.get("v4_mode") == "DHCP":
                 p = await asyncio.create_subprocess_exec('netsh', 'interface', 'ip', 'set', 'dns', f'name="{interface}"', 'source=dhcp', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2331,6 +2320,10 @@ async def restore_system_proxy():
         return False
 
 async def set_system_proxy(enable, port=None):
+    if DIAGNOSE_ONLY:
+        log("Diagnose-only mode active. Skipping system proxy changes.", "INFO")
+        return True
+
     if not port: port = LOCAL_HTTP_PORT
     system = platform.system().lower()
     state = load_state()
@@ -2728,8 +2721,16 @@ def generate_network_report(states, applied_bypass="none", diagnosis=None, selec
     if not selected_method: selected_method = "unknown"
     
     confidence = "low"
+    severity_score = 30
+    
     if selected_method == "healthy":
-        confidence = "high"
+        confidence = "high"; severity_score = 100
+    elif "blackout" in diagnosis: severity_score = 0
+    elif "intl_transit_cut" in diagnosis: severity_score = 10
+    elif "aggressive" in diagnosis or states.get('dpi') == 'aggressive': severity_score = 20
+    elif "throttling" in diagnosis: severity_score = 40
+    elif "rst" in diagnosis or states.get('dpi') == 'rst': severity_score = 50
+    elif states.get('speed') == 'slow': severity_score = 70
     elif selected_method in ["tor_proxy", "tor_snowflake", "psiphon", "dnstt"]:
         confidence = "medium"
     elif selected_method in ["vless", "trojan", "hysteria2", "hy2", "tuic", "warp", "cf_worker", "balancer"]:
@@ -2741,7 +2742,8 @@ def generate_network_report(states, applied_bypass="none", diagnosis=None, selec
     verdict = {
         "diagnosis": diagnosis,
         "selected_method": selected_method,
-        "confidence": confidence
+        "confidence": confidence,
+        "severity_score": severity_score
     }
     report = {"timestamp": datetime.datetime.now().isoformat(), "network_states": states, "applied_bypass": applied_bypass, "verdict": verdict}
     try: atomic_write_json(REPORT_FILE, report)
@@ -2825,13 +2827,12 @@ async def decision_engine(states):
         return 120
 
     if states['ip']['internal'] and not states['ip']['external']:
-        issues.append(("Complete International Transit Cut (National Internet Only)", 
-                       ["International traffic is completely blocked. VPN/Bypass methods will not work.", 
-                        "Please wait for restoration or use eSIM/Satellite."]))
+        issues.append(("Severe International Transit Degradation", 
+                       ["International routing appears down. Bypass attempts will continue but may fail."]))
         diagnosis.append("intl_transit_cut")
         generate_network_report(states, "intl_transit_cut", diagnosis, "intl_transit_cut")
         for idx, (issue, solutions) in enumerate(issues, 1):
-            log(f"Issue {idx}: {issue}", "FAIL")
+            log(f"Issue {idx}: {issue}", "WARN")
             for sol in solutions: log(f"   - {sol}", "SOL")
         return 300 
 
@@ -3226,7 +3227,11 @@ async def main():
                     if failures < 2:
                         await asyncio.sleep(30 + random.uniform(0, 15))
                         continue
+                    
                     log("Two consecutive failures detected. Proceeding with deep scan.", "WARN")
+                    state['cached_dns_state'] = 'unknown'
+                    state['cached_dpi_state'] = 'unknown'
+                    save_state(state)
 
             state = load_state()
             last_deep_scan = state.get('last_deep_scan', 0)
@@ -3322,4 +3327,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt: log("Exiting...", "INFO")
     finally:
         cleanup_child_processes()
+
         sys.exit(0)
