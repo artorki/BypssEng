@@ -52,3 +52,18 @@ async def get_recent_logs(limit=100):
             return [{"ts": row[0], "level": row[1], "msg": row[2]} for row in rows]
     return []
 
+async def get_history(limit=50):
+    if _db_conn:
+        async with _db_conn.execute("SELECT ts, data FROM network_events ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
+            rows = await cursor.fetchall()
+            return [{"ts": row[0], "data": json.loads(row[1])} for row in rows]
+    return []
+
+async def cleanup_old_logs():
+    if _db_conn:
+        cutoff_time = time.time() - (7 * 24 * 60 * 60)
+        await _db_conn.execute("DELETE FROM logs WHERE ts < ?", (cutoff_time,))
+        await _db_conn.execute("DELETE FROM network_events WHERE ts < ?", (cutoff_time,))
+        await _db_conn.commit()
+
+
