@@ -7,6 +7,7 @@ import os
 import time
 import atexit
 import webbrowser
+import argparse
 
 if getattr(sys, 'frozen', False):
     ROOT_DIR = os.path.dirname(sys.executable)
@@ -22,19 +23,8 @@ import telemetry
 import api_server
 
 async def main():
-    if getattr(sys, 'frozen', False):
-        BypssEng.APP_DIR = ROOT_DIR
-        BypssEng.CORE_DIR = CORE_DIR
-        BypssEng.DATA_DIR = os.path.join(ROOT_DIR, "Data")
-        os.makedirs(BypssEng.DATA_DIR, exist_ok=True)
-        BypssEng.UNIFIED_CONFIG_FILE = os.path.join(BypssEng.DATA_DIR, "cnfg.json")
-        BypssEng.SUB_CACHE_FILE = os.path.join(BypssEng.DATA_DIR, "my_configs.config")
-        BypssEng.WORKING_CONFIGS_CACHE = os.path.join(BypssEng.DATA_DIR, "working_configs.cache")
-        BypssEng.REPORT_FILE = os.path.join(BypssEng.DATA_DIR, "network_report.json")
-        BypssEng.STATE_FILE = os.path.join(BypssEng.DATA_DIR, "state.json")
-        BypssEng.LOCK_FILE = os.path.join(BypssEng.DATA_DIR, "engine.lock")
-
     await telemetry.init_db()
+    await telemetry.cleanup_old_logs()
 
     try:
         atexit.unregister(BypssEng.cleanup_child_processes)
@@ -84,7 +74,7 @@ async def main():
     
     BypssEng.log(f"Dashboard is running on http://127.0.0.1:8080", "SOL")
     
-    webbrowser.open("http://127.0.0.1:8080")
+    webbrowser.open(f"http://127.0.0.1:8080?token={api_server.DASHBOARD_TOKEN}")
 
     engine_task = asyncio.create_task(BypssEng.main())
     
@@ -107,6 +97,13 @@ async def safe_cleanup():
         print(f"Error during safe cleanup: {e}")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="BypssEng Advanced Anti-Censorship Engine")
+    parser.add_argument("--diagnose-only", action="store_true", help="Only run tests, do not change system proxy/DNS")
+    args = parser.parse_args()
+
+    if args.diagnose_only:
+        BypssEng.DIAGNOSE_ONLY = True
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -131,4 +128,3 @@ if __name__ == "__main__":
             pass
         loop.close()
         print("Shutdown complete.")
-
