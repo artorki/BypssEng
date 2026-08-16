@@ -5,350 +5,146 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BypssEng | artorki</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>BypssEng Dashboard</title>
     <style>
-        :root {
-            --bg-main: #0a0e14;
-            --bg-card: #11161f;
-            --bg-card-hover: #161c28;
-            --border-color: #232a36;
-            --text-main: #e2e8f0;
-            --text-muted: #64748b;
-        }
-        
-        body { 
-            background-color: var(--bg-main); 
-            color: var(--text-main); 
-            font-family: 'Vazirmatn', sans-serif; 
-            background-image: radial-gradient(circle at 100% 0%, rgba(56, 189, 248, 0.05) 0%, transparent 40%);
-            min-height: 100vh;
-        }
-        
-        .card {
-            background: var(--bg-card); 
-            border: 1px solid var(--border-color); 
-            border-radius: 12px; 
-            transition: all 0.2s ease;
-        }
-        .card:hover { 
-            background: var(--bg-card-hover);
-            border-color: #334155;
-        }
-        
-        .mono { font-family: 'Consolas', 'Monaco', monospace; }
-        
-        .status-badge {
-            padding: 0.25rem 0.6rem; 
-            border-radius: 6px; 
-            font-size: 0.75rem; 
-            font-weight: 600;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            border: 1px solid transparent;
-        }
-        .badge-success { background: rgba(16, 185, 129, 0.1); color: #34d399; border-color: rgba(16, 185, 129, 0.2); }
-        .badge-warn { background: rgba(245, 158, 11, 0.1); color: #fbbf24; border-color: rgba(245, 158, 11, 0.2); }
-        .badge-fail { background: rgba(239, 68, 68, 0.1); color: #f87171; border-color: rgba(239, 68, 68, 0.2); }
-        .badge-neutral { background: rgba(100, 116, 139, 0.1); color: #94a3b8; border-color: rgba(100, 116, 139, 0.2); }
-        
-        .dot {
-            width: 6px; height: 6px; border-radius: 50%;
-        }
-        .dot-success { background: #34d399; box-shadow: 0 0 5px rgba(52, 211, 153, 0.5); }
-        .dot-warn { background: #fbbf24; }
-        .dot-fail { background: #f87171; }
-        
-        .log-box::-webkit-scrollbar { width: 4px; }
-        .log-box::-webkit-scrollbar-track { background: transparent; }
-        .log-box::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-        
-        .input-field {
-            background: #0d121b;
-            border: 1px solid var(--border-color);
-            color: #e2e8f0;
-            transition: all 0.2s;
-        }
-        .input-field:focus {
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-            outline: none;
-        }
-        
-        .btn-action {
-            background: #2563eb;
-            color: white;
-            font-weight: 500;
-            transition: all 0.2s;
-        }
-        .btn-action:hover { background: #3b82f6; }
-        .btn-action:disabled { background: #1e3a8a; cursor: not-allowed; }
-        
-        .progress-track {
-            background: #1e2530;
-            height: 4px;
-            border-radius: 2px;
-            overflow: hidden;
-            margin-top: 8px;
-        }
-        .progress-fill {
-            height: 100%;
-            border-radius: 2px;
-            transition: width 0.5s ease, background-color 0.5s ease;
-        }
+        :root { --bg: #0f172a; --card: #1e293b; --text: #f1f5f9; --muted: #94a3b8; --border: #334155; --green: #22c55e; --red: #ef4444; --yellow: #eab308; --blue: #3b82f6; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        body { background: var(--bg); color: var(--text); padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .card { background: var(--card); padding: 15px; border-radius: 8px; border: 1px solid var(--border); }
+        .card h3 { color: var(--muted); font-size: 14px; margin-bottom: 10px; text-transform: uppercase; }
+        .value { font-size: 24px; font-weight: bold; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; text-transform: uppercase; display: inline-block; }
+        .badge.ok { background: rgba(34,197,94,0.2); color: var(--green); }
+        .badge.warn { background: rgba(234,179,8,0.2); color: var(--yellow); }
+        .badge.fail { background: rgba(239,68,68,0.2); color: var(--red); }
+        .severity-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; margin-top: 10px; overflow: hidden; }
+        .severity-fill { height: 100%; background: var(--green); transition: width 0.5s, background 0.5s; }
+        #logs { max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.6; }
+        .log-line { padding: 2px 5px; border-bottom: 1px solid var(--border); }
+        .log-PASS { color: var(--green); } .log-WARN { color: var(--yellow); } .log-FAIL, .log-ERROR { color: var(--red); } .log-SOL { color: var(--blue); }
+        .chart-container { height: 150px; display: flex; align-items: flex-end; gap: 2px; padding-top: 20px; }
+        .bar { flex: 1; background: var(--blue); border-radius: 2px 2px 0 0; opacity: 0.7; transition: height 0.3s; }
+        .bar:hover { opacity: 1; }
     </style>
 </head>
-<body class="p-6 md:p-10 max-w-7xl mx-auto">
+<body>
+    <div class="header">
+        <h1>BypssEng Dashboard</h1>
+        <div id="verdict-box" class="badge ok">Loading...</div>
+    </div>
 
-    <div x-data="dashboard()" class="flex flex-col gap-6">
-        
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center pb-6 border-b border-slate-800">
-            <div class="flex items-center gap-3 mb-4 md:mb-0">
-                <div class="w-10 h-10 bg-slate-800 border border-slate-700 rounded-xl flex items-center justify-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 3l8 4v5c0 5-3.5 9-8 10-4.5-1-8-5-8-10V7l8-4z" />
-                    </svg>
-                </div>
-                <div>
-                    <h1 class="text-xl font-bold text-slate-50">پلتفرم مانیتورینگ BypssEng</h1>
-                    <p class="text-xs text-slate-500">سیستم تشخیص و مدیریت اتصال تطبیق‌پذیر</p>
-                </div>
-            </div>
-            <div class="flex items-center gap-4 text-sm">
-                <div class="flex items-center gap-2 bg-slate-800/50 border border-slate-700 px-3 py-1.5 rounded-lg">
-                    <div :class="connected ? 'dot-success' : 'dot-fail'" class="dot"></div>
-                    <span class="text-slate-300" x-text="connected ? 'متصل' : 'قطع'"></span>
-                </div>
-                <div class="text-slate-500 mono" x-text="clock"></div>
-            </div>
-        </header>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            <div class="lg:col-span-2 flex flex-col gap-6">
-                
-                <div class="card p-6">
-                    <div class="flex justify-between items-start mb-4">
-                        <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">وضعیت موتور</h2>
-                        <span x-show="status?.state?.proxy_enabled" class="status-badge badge-success">
-                            <span class="dot dot-success"></span> پروکسی فعال
-                        </span>
-                        <span x-show="!status?.state?.proxy_enabled" class="status-badge badge-neutral">
-                            <span class="dot" style="background:#64748b"></span> پروکسی غیرفعال
-                        </span>
-                    </div>
-                    
-                    <div class="flex flex-col md:flex-row justify-between items-start gap-4">
-                        <div>
-                            <p class="text-xs text-slate-500 mb-1">روش انتخاب شده</p>
-                            <h3 class="text-2xl font-bold text-white capitalize" x-text="status?.report?.verdict?.selected_method || 'در حال بررسی...'"></h3>
-                        </div>
-                        <div class="text-left md:text-right">
-                            <p class="text-xs text-slate-500 mb-1">میزان اطمینان</p>
-                            <span class="status-badge" :class="getConfidenceClass(status?.report?.verdict?.confidence)" x-text="status?.report?.verdict?.confidence || 'نامشخص'"></span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card p-6">
-                    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">لایه‌های شبکه</h2>
-                    <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
-                        <template x-for="layer in networkLayers" :key="layer.name">
-                            <div class="bg-slate-900/50 border border-slate-800 p-3 rounded-lg">
-                                <div class="flex justify-between items-center mb-1">
-                                    <span class="text-xs text-slate-500" x-text="layer.name"></span>
-                                    <div class="w-1.5 h-1.5 rounded-full" :class="getDotClass(layer.val)"></div>
-                                </div>
-                                <div class="text-sm font-semibold text-slate-200 capitalize" x-text="layer.val || 'نامشخص'"></div>
-                                <div class="progress-track">
-                                    <div class="progress-fill" :class="getBarClass(layer.val)" :style="`width: ${getBarWidth(layer.val)}%`"></div>
-                                </div>
-                            </div>
-                        </template>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card p-6">
-                <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">دلایل تصمیم‌گیری</h2>
-                <div class="space-y-3">
-                    <template x-for="reason in (status?.report?.verdict?.diagnosis || [])" :key="reason">
-                        <div class="flex items-start gap-2 text-sm text-slate-300 bg-slate-900/40 p-2 rounded-md border border-slate-800">
-                            <svg class="w-4 h-4 text-blue-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <span x-text="reason" class="capitalize"></span>
-                        </div>
-                    </template>
-                    <div x-show="!status?.report?.verdict?.diagnosis?.length" class="text-sm text-slate-600 text-center py-8">
-                        در انتظار تحلیل سیستم...
-                    </div>
-                </div>
-            </div>
+    <div class="grid">
+        <div class="card">
+            <h3>Severity Score</h3>
+            <div class="value" id="severity-score">--</div>
+            <div class="severity-bar"><div id="severity-fill" class="severity-fill" style="width: 0%"></div></div>
         </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
-            
-            <div class="card p-6 lg:col-span-2">
-                <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">بررسی کانفیگ</h2>
-                <div class="flex flex-col gap-3">
-                    <input type="text" x-model="configLink" placeholder="لینک کانفیگ (vless://...)" class="input-field p-2.5 text-sm rounded-lg">
-                    <button @click="testConfig()" :disabled="testing" class="btn-action py-2.5 rounded-lg text-sm flex items-center justify-center gap-2">
-                        <svg x-show="!testing" xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-                        <svg x-show="testing" class="animate-spin w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                        <span x-text="testing ? 'در حال بررسی...' : 'بررسی کانفیگ'"></span>
-                    </button>
-                </div>
-                
-                <div x-show="testResult" x-transition class="mt-4 bg-slate-900/60 border border-slate-800 rounded-lg p-4 text-sm space-y-2">
-                    <div class="flex justify-between"><span class="text-slate-500">پروتکل:</span> <span class="font-semibold text-blue-400 uppercase" x-text="testResult?.parsed?.protocol"></span></div>
-                    <div class="flex justify-between"><span class="text-slate-500">سرور:</span> <span class="font-mono text-slate-300" x-text="testResult?.parsed?.vless_server_ip || testResult?.parsed?.trojan_server_ip"></span></div>
-                    <div class="flex justify-between"><span class="text-slate-500">پورت:</span> <span class="font-mono text-slate-300" x-text="testResult?.parsed?.vless_port || testResult?.parsed?.trojan_port"></span></div>
-                    <div class="flex justify-between pt-2 border-t border-slate-800"><span class="text-slate-500">تاخیر (Latency):</span> <span class="font-bold" :class="testResult?.latency ? 'text-green-400' : 'text-red-400'" x-text="testResult?.latency ? testResult.latency + ' میلی‌ثانیه' : 'غیرقابل دسترسی'"></span></div>
-                </div>
-            </div>
-
-            <div class="card p-6 lg:col-span-3 flex flex-col">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">لاگ‌های زنده سیستم</h2>
-                    <span class="text-xs text-slate-600 mono">LIVE</span>
-                </div>
-                <div class="log-box bg-[#0a0e14] border border-slate-800 rounded-lg p-4 flex-grow h-72 overflow-y-auto">
-                    <template x-for="log in logs" :key="log.ts">
-                        <div class="text-xs mb-1.5 flex items-start">
-                            <span class="text-slate-600 ml-2 whitespace-nowrap" x-text="new Date(log.ts * 1000).toLocaleTimeString('en-GB')"></span>
-                            <span class="font-bold ml-2 w-12 text-center" :class="getLogClass(log.level)" x-text="log.level"></span>
-                            <span class="text-slate-400 flex-1 break-all" x-text="log.msg"></span>
-                        </div>
-                    </template>
-                    <div x-show="logs.length === 0" class="text-slate-700 text-center pt-16 text-sm">
-                        سیستم بیکار است...
-                    </div>
-                </div>
-            </div>
+        <div class="card">
+            <h3>Applied Bypass</h3>
+            <div class="value" id="bypass-method">None</div>
+        </div>
+        <div class="card">
+            <h3>Network States</h3>
+            <div id="states" style="display: flex; flex-wrap: wrap; gap: 5px;"></div>
+        </div>
+        <div class="card">
+            <h3>Success History (Last 50)</h3>
+            <div class="chart-container" id="history-chart"></div>
         </div>
     </div>
 
+    <div class="card">
+        <h3>Live Logs</h3>
+        <div id="logs"></div>
+    </div>
+
     <script>
-        function dashboard() {
-            return {
-                connected: false, ws: null, status: {}, logs: [], configLink: '', testResult: null, testing: false,
-                clock: '00:00:00',
-                networkLayers: [
-                    { name: 'DNS', val: null }, { name: 'DPI', val: null }, { name: 'UDP', val: null },
-                    { name: 'QUIC', val: null }, { name: 'VPN', val: null }, { name: 'SPEED', val: null }
-                ],
-                
-                init() {
-                    this.connectWs();
-                    this.fetchStatus();
-                    setInterval(() => this.fetchStatus(), 3000);
-                    this.updateClock();
-                    setInterval(() => this.updateClock(), 1000);
-                },
-                
-                updateClock() {
-                    this.clock = new Date().toLocaleTimeString('en-GB');
-                },
+        const urlParams = new URLSearchParams(window.location.search);
+        const token = urlParams.get('token') || 'invalid';
+        
+        const ws = new WebSocket(`ws://${window.location.host}/ws?token=${token}`);
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === 'log') addLog(data.payload);
+            else if (data.type === 'network_update') updateStatus(data.payload);
+        };
 
-                updateLayers() {
-                    const states = this.status?.report?.network_states;
-                    if(states) {
-                        this.networkLayers[0].val = states.dns;
-                        this.networkLayers[1].val = states.dpi;
-                        this.networkLayers[2].val = states.udp;
-                        this.networkLayers[3].val = states.quic;
-                        this.networkLayers[4].val = states.vpn;
-                        this.networkLayers[5].val = states.speed;
-                    }
-                },
-
-                connectWs() {
-                    this.ws = new WebSocket(`ws://${window.location.host}/ws`);
-                    this.ws.onopen = () => { this.connected = true; };
-                    this.ws.onclose = () => { 
-                        this.connected = false; 
-                        setTimeout(() => this.connectWs(), 3000); 
-                    };
-                    this.ws.onmessage = (event) => {
-                        const data = JSON.parse(event.data);
-                        if (data.type === 'log') {
-                            this.logs.push(data.payload);
-                            if (this.logs.length > 150) this.logs.shift();
-                            setTimeout(() => {
-                                const box = document.querySelector('.log-box');
-                                if(box) box.scrollTop = box.scrollHeight;
-                            }, 50);
-                        } else if (data.type === 'network_update') {
-                            this.status = { report: data.payload, state: this.status?.state };
-                            this.updateLayers();
-                        }
-                    };
-                },
-
-                async fetchStatus() {
-                    try {
-                        const res = await fetch('/api/status', { headers: { 'Authorization': 'Bearer secret-dashboard-token-123' } });
-                        if (res.ok) {
-                            const data = await res.json();
-                            this.status = data;
-                            this.updateLayers();
-                        }
-                    } catch (e) {}
-                },
-
-                async testConfig() {
-                    if (!this.configLink || this.testing) return;
-                    this.testing = true;
-                    this.testResult = null;
-                    try {
-                        const res = await fetch('/api/configs/test', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer secret-dashboard-token-123' },
-                            body: JSON.stringify({ link: this.configLink })
-                        });
-                        const data = await res.json();
-                        if (res.ok) { this.testResult = data; } 
-                        else { alert(data.error || 'خطا در بررسی کانفیگ'); }
-                    } catch (e) { alert('خطا در ارتباط با سرور'); }
-                    this.testing = false;
-                },
-
-                getDotClass(value) {
-                    if (!value) return 'bg-slate-700';
-                    if (['ok', 'none', 'healthy', 'reachable'].includes(value)) return 'dot-success';
-                    if (['dropped', 'blocked', 'hijacked', 'failed', 'aggressive', 'rst'].includes(value)) return 'dot-fail';
-                    return 'dot-warn';
-                },
-                getBarClass(value) {
-                    if (!value) return 'bg-slate-700';
-                    if (['ok', 'none', 'healthy', 'reachable'].includes(value)) return 'bg-emerald-500';
-                    if (['dropped', 'blocked', 'hijacked', 'failed', 'aggressive', 'rst'].includes(value)) return 'bg-rose-500';
-                    return 'bg-amber-500';
-                },
-                getBarWidth(value) {
-                    if (!value) return '0';
-                    if (['ok', 'none', 'healthy', 'reachable'].includes(value)) return '100';
-                    if (['dropped', 'blocked', 'hijacked', 'failed', 'aggressive', 'rst'].includes(value)) return '15';
-                    return '50';
-                },
-                getConfidenceClass(c) {
-                    if(c === 'high') return 'badge-success';
-                    if(c === 'medium') return 'badge-warn';
-                    return 'badge-neutral';
-                },
-                getLogClass(level) {
-                    if (['PASS'].includes(level)) return 'text-emerald-400';
-                    if (['INFO', 'HEADER'].includes(level)) return 'text-sky-400';
-                    if (['WARN', 'SOL'].includes(level)) return 'text-amber-400';
-                    if (['FAIL', 'ERROR'].includes(level)) return 'text-rose-400';
-                    return 'text-slate-400';
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status', { headers: { 'Authorization': `Bearer ${token}` } });
+                if(res.ok) {
+                    const data = await res.json();
+                    if(data.report) updateStatus(data.report);
                 }
+            } catch(e) {}
+        }
+
+        async function fetchHistory() {
+            try {
+                const res = await fetch('/api/history', { headers: { 'Authorization': `Bearer ${token}` } });
+                if(res.ok) {
+                    const data = await res.json();
+                    renderChart(data.reverse());
+                }
+            } catch(e) {}
+        }
+
+        function updateStatus(report) {
+            const verdict = report.verdict || {};
+            const score = verdict.severity_score || 0;
+            
+            document.getElementById('severity-score').innerText = `${score}/100`;
+            const fill = document.getElementById('severity-fill');
+            fill.style.width = `${score}%`;
+            fill.style.background = score > 70 ? 'var(--green)' : score > 40 ? 'var(--yellow)' : 'var(--red)';
+
+            document.getElementById('bypass-method').innerText = report.applied_bypass || 'None';
+
+            const verdictBox = document.getElementById('verdict-box');
+            const conf = verdict.confidence || 'low';
+            verdictBox.innerText = `${report.selected_method || 'Unknown'} (${conf})`;
+            verdictBox.className = `badge ${conf === 'high' ? 'ok' : conf === 'medium' ? 'warn' : 'fail'}`;
+
+            const statesDiv = document.getElementById('states');
+            statesDiv.innerHTML = '';
+            const states = report.states || {};
+            for(const key in states) {
+                const val = typeof states[key] === 'object' ? JSON.stringify(states[key]) : states[key];
+                const isOk = val === 'ok' || val === true || val === 'none';
+                statesDiv.innerHTML += `<div class="badge ${isOk ? 'ok' : 'fail'}">${key}: ${val}</div>`;
             }
         }
+
+        function addLog(log) {
+            const logsDiv = document.getElementById('logs');
+            const time = new Date(log.ts * 1000).toLocaleTimeString();
+            const line = document.createElement('div');
+            line.className = `log-line log-${log.level}`;
+            line.innerText = `[${time}] [${log.level}] ${log.msg}`;
+            logsDiv.prepend(line);
+            if(logsDiv.children.length > 100) logsDiv.removeChild(logsDiv.lastChild);
+        }
+
+        function renderChart(history) {
+            const chart = document.getElementById('history-chart');
+            chart.innerHTML = '';
+            history.forEach(item => {
+                const score = item.data?.verdict?.severity_score || 0;
+                const bar = document.createElement('div');
+                bar.className = 'bar';
+                bar.style.height = `${score}%`;
+                bar.style.background = score > 70 ? 'var(--green)' : score > 40 ? 'var(--yellow)' : 'var(--red)';
+                bar.title = `Score: ${score}`;
+                chart.appendChild(bar);
+            });
+        }
+
+        fetchStatus();
+        fetchHistory();
+        setInterval(fetchStatus, 5000);
     </script>
 </body>
 </html>
