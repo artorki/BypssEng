@@ -1,11 +1,11 @@
-# 🛡️ BypssEng: Advanced Anti-Censorship Engine
+# 🛡️ Advanced Anti-Censorship Engine
 ### موتور هوشمند تحلیل شبکه و دور زدن خودکار فیلترینگ پیشرفته
 
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/yourusername/BypssEng)
 
-**یک راهکار تمام‌خودکار و خلاقانه برای تشخیص دقیق نوع فیلترینگ/قطعی اینترنت و اتصال بی‌وقفه کاربر به اینترنت آزاد با استفاده از پیشرفته‌ترین تکنیک‌های دور زدن (Bypassing).**
+**راهکار تمام‌خودکار برای تشخیص دقیق نوع فیلترینگ/قطعی اینترنت و اتصال بی‌وقفه کاربر به اینترنت آزاد با استفاده از تکنیک‌های پیشرفته دور زدن (Bypassing).**
 
 
 ---
