@@ -101,6 +101,20 @@ async def test_config_api(request):
     latency = await BypssEng.check_config_latency(parsed)
     return web.json_response({"parsed": parsed, "latency": latency})
 
+async def save_subscription(request):
+    data = await request.json()
+    urls = data.get("urls", [])
+    if not urls:
+        return web.json_response({"error": "URLs required"}, status=400)
+    
+    cfg = BypssEng.load_unified_config()
+    cfg["subscription_urls"] = urls
+    BypssEng.atomic_write_json(BypssEng.UNIFIED_CONFIG_FILE, cfg)
+    
+    asyncio.create_task(BypssEng.fetch_fresh_configs(wait=False))
+    
+    return web.json_response({"status": "success"})
+
 async def create_app():
     app = web.Application(middlewares=[auth_middleware])
     
@@ -112,6 +126,7 @@ async def create_app():
         web.get('/api/configs', get_configs),
         web.get('/api/history', get_history),
         web.post('/api/configs/test', test_config_api),
+        web.post('/api/configs/subscription', save_subscription),
     ])
         
     return app
