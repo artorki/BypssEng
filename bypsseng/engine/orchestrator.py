@@ -2,7 +2,7 @@ import asyncio
 import random
 from engine.state_machine import StateMachine, EngineState
 from decision.policies import setup_decision_rules
-from engine.models import DiagnosisResult
+from engine.models import DiagnosisResult, DecisionExplanation
 from core.logger import log
 from config.models import CONFIG
 
@@ -12,12 +12,14 @@ from diagnosis.dns import test_dns_layer
 from diagnosis.tls import test_dpi_layer
 from diagnosis.bandwidth import test_throttling
 from diagnosis.transport import test_udp_status
+from runtime.process import pm
 
 import telemetry.storage as telemetry
 
 class Orchestrator:
-    def __init__(self, app_dir, bypass_executor):
+    def __init__(self, app_dir, bypass_executor, local_http_port):
         self.app_dir = app_dir
+        self.local_http_port = local_http_port
         self.sm = StateMachine()
         self.rule_engine = setup_decision_rules()
         self.bypass_executor = bypass_executor
@@ -93,14 +95,22 @@ class Orchestrator:
     async def select_and_connect(self):
         self.sm.transition(EngineState.SELECTING)
         diagnoses = self.rule_engine.evaluate(self.states)
-        primary_diagnosis = diagnoses[0]
+        primary_diagnosis = max(diagnoses, key=lambda d: d.confidence)
         
         log(f"Decision Engine Result: {primary_diagnosis.condition} (Confidence: {primary_diagnosis.confidence})", "SOL")
 
         self.sm.transition(EngineState.STARTING)
         
-        success = await self.bypass_executor(self.states, primary_diagnosis)
+        success, explanation = await self.bypass_executor(self.states, primary_diagnosis)
         
+        if explanation:
+            log(f"Decision Explainability: Selected {explanation.selected} over {explanation.alternatives}. Reasons: {explanation.evidence}", "INFO")
+            await telemetry.insert_decision_telemetry(
+                diagnosis=primary_diagnosis.condition, confidence=primary_diagnosis.confidence,
+                selected_strategy=explanation.selected, score=0.0, result="success" if success else "failed",
+                explanation={"alternatives": explanation.alternatives, "reasons": explanation.evidence}
+            )
+
         if success:
             self.sm.transition(EngineState.VERIFYING)
         else:
@@ -110,8 +120,7 @@ class Orchestrator:
 
     async def verify(self):
         log("Verifying connection...", "INFO")
-        from BypssEng import test_current_proxy_health
-        if await test_current_proxy_health():
+        if await pm.test_current_proxy_health(self.local_http_port):
             log("Verification successful. Entering ACTIVE state.", "PASS")
             self.sm.transition(EngineState.ACTIVE)
         else:
@@ -121,10 +130,8 @@ class Orchestrator:
     async def monitor(self):
         self.sm.transition(EngineState.MONITORING)
         log("Monitoring network health...", "INFO")
-        
-        from BypssEng import test_current_proxy_health
-        if await test_current_proxy_health():
+        if await pm.test_current_proxy_health(self.local_http_port):
             await asyncio.sleep(CONFIG.intervals.test_loop + random.uniform(0, 15))
-            self.sm.state = EngineState.MONITORING
+            self.sm.state = EngineState.MONITORING 
         else:
             self.sm.transition(EngineState.DEGRADED)
