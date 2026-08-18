@@ -1,5 +1,3 @@
-# BypssEng - V3
-
 import asyncio
 import aiohttp.web
 import sys
@@ -110,5 +108,3 @@ if __name__ == "__main__":
         except Exception: pass
         loop.close()
         print("Shutdown complete.")
-
-
