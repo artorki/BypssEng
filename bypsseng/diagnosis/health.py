@@ -3,6 +3,7 @@ import time
 import random
 import ssl
 import aiohttp
+import logging
 from core.logger import log
 from core.network import get_resolver
 from config.models import CONFIG
