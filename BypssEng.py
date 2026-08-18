@@ -478,18 +478,30 @@ async def execute_bypass_and_connect(creds, dpi_state='none'):
             
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
                 success = False
-                for url in ["https://cp.cloudflare.com/generate_204", "https://www.google.com/generate_204"]:
+                test_urls = [
+                    "https://cp.cloudflare.com/generate_204", 
+                    "https://www.google.com/generate_204",
+                    "https://www.youtube.com/generate_204"
+                ]
+                for url in test_urls:
                     if proc.returncode is not None: break
                     try:
-                        async with session.get(url, proxy=proxy) as resp:
-                            if resp.status in [204, 200, 301, 302]:
-                                log(f"Successfully connected via {creds['protocol'].upper()}!", "PASS")
+                        async with session.get(url, proxy=proxy, allow_redirects=False) as resp:
+                            body = await resp.read()
+                            loc = resp.headers.get("Location", "")
+                            
+                            # بررسی اینکه آیا صفحه فیلترینگ یا خطای سانسور بازگردانده شده است یا خیر
+                            is_blocked = ("10.10.34.34" in loc) or (resp.status in [403, 451]) or (b"blocked" in body.lower() and b"filter" in body.lower())
+                            
+                            if resp.status in [204, 200] and len(body) == 0 and not is_blocked:
+                                log(f"Successfully connected via {creds['protocol'].upper()}! (Tested: {url})", "PASS")
                                 if not await set_system_proxy(True, LOCAL_HTTP_PORT): await restore_state_on_failure(); return False
                                 if old_proc and old_proc.returncode is None: old_proc.terminate()
                                 success = True; break
                     except Exception: continue
+                    
                 if not success:
-                    log(f"Proxy failed to connect.", "FAIL"); await restore_state_on_failure(); return False
+                    log(f"Proxy failed to connect or bypass filtering.", "FAIL"); await restore_state_on_failure(); return False
                 return True
         except Exception as e:
             log(f"Failed to start {binary_name}: {e}", "ERROR")
