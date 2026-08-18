@@ -20,6 +20,7 @@ import atexit
 import re
 import ipaddress
 import argparse
+import inspect
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PACKAGE_DIR = os.path.join(SCRIPT_DIR, "bypsseng")
@@ -50,6 +51,7 @@ if platform.system().lower() == 'windows':
 
 APP_DIR = PACKAGE_DIR
 BIN_DIR = os.path.join(APP_DIR, "bin")
+CORE_DIR = os.path.join(APP_DIR, "core")
 DATA_DIR = os.path.join(APP_DIR, "Data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -68,6 +70,7 @@ UNIFIED_CONFIG_FILE = os.path.join(DATA_DIR, "cnfg.json")
 WORKING_CONFIGS_CACHE = os.path.join(DATA_DIR, "working_configs.cache")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 LOCK_FILE = os.path.join(DATA_DIR, "engine.lock")
+REPORT_FILE = os.path.join(DATA_DIR, "network_report.json")
 
 lock_fd = None
 DIAGNOSE_ONLY = False
@@ -256,7 +259,7 @@ async def get_current_proxy():
             if mode == 'manual':
                 host_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'host', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 host, _ = await host_proc.communicate()
-                port_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'port', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                port_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'port', stdout=subprocess.PIPE, stderr=subprocessPIPE)
                 port, _ = await port_proc.communicate()
                 http_host = host.decode().strip().strip("'")
                 return {"valid": True, "enabled": True, "server": f"{http_host}:{port.decode().strip().strip(chr(39))}" if http_host else ""}
@@ -340,6 +343,85 @@ def load_working_configs():
     if not os.path.exists(WORKING_CONFIGS_CACHE): return []
     with open(WORKING_CONFIGS_CACHE, "r") as f: return [line.strip() for line in f.readlines() if line.strip()]
 
+async def fetch_fresh_configs(wait=True):
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(DATA_DIR)
+        sys.path.insert(0, CORE_DIR)
+        import cnfg
+        log("Running cnfg as module...", "SOL")
+        if hasattr(cnfg, 'main'):
+            old_mtime = os.path.getmtime(UNIFIED_CONFIG_FILE) if os.path.exists(UNIFIED_CONFIG_FILE) else 0
+            if inspect.iscoroutinefunction(cnfg.main): await cnfg.main()
+            else: await asyncio.get_event_loop().run_in_executor(None, cnfg.main)
+            new_mtime = os.path.getmtime(UNIFIED_CONFIG_FILE) if os.path.exists(UNIFIED_CONFIG_FILE) else 0
+            if new_mtime > old_mtime: log("Fresh configs fetched successfully via module!", "PASS"); return True
+            else: log("Module ran but no new configs generated.", "WARN"); return False
+    except ImportError: pass
+    except Exception as e: logger.error(f"Module cnfg execution failed: {e}. Falling back to subprocess.")
+    finally:
+        os.chdir(original_cwd)
+        if CORE_DIR in sys.path: sys.path.remove(CORE_DIR)
+
+    cnfg_script = os.path.join(CORE_DIR, "cnfg.py")
+    if os.path.exists(cnfg_script): cmd = [sys.executable, cnfg_script]
+    else: log("cnfg.py not found in core directory! Cannot auto-fetch.", "FAIL"); return False
+
+    log("Running cnfg to get fresh configs via subprocess...", "SOL")
+    try:
+        creationflags = subprocess.CREATE_NO_WINDOW if platform.system().lower() == 'windows' else 0
+        old_mtime = os.path.getmtime(UNIFIED_CONFIG_FILE) if os.path.exists(UNIFIED_CONFIG_FILE) else 0
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=creationflags, cwd=DATA_DIR)
+        if wait:
+            try: stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+            except asyncio.TimeoutError:
+                log("cnfg took too long (45s). Terminating.", "WARN")
+                try: proc.terminate(); await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    try: proc.kill()
+                    except: pass
+                return False
+            new_mtime = os.path.getmtime(UNIFIED_CONFIG_FILE) if os.path.exists(UNIFIED_CONFIG_FILE) else 0
+            if proc.returncode == 0 and new_mtime > old_mtime: log("Fresh configs fetched successfully!", "PASS"); return True
+            else: err = stderr.decode(errors='ignore'); log(f"cnfg exited with error or no update: {err}", "WARN"); return False
+        else:
+            async def bg_task():
+                try:
+                    await proc.communicate()
+                    new_mtime = os.path.getmtime(UNIFIED_CONFIG_FILE) if os.path.exists(UNIFIED_CONFIG_FILE) else 0
+                    if proc.returncode == 0 and new_mtime > old_mtime: log("Background cnfg fetch completed successfully.", "PASS")
+                    else: log("Background cnfg fetch finished with errors or no update.", "WARN")
+                except Exception as e: logger.error(f"Background cnfg fetch failed: {e}")
+            asyncio.create_task(bg_task()); log("Background config fetch started.", "INFO"); return "started"
+    except Exception as e: log(f"Failed to run cnfg: {e}", "WARN"); return False
+
+def generate_network_report(states, applied_bypass="none", diagnosis=None, selected_method=None):
+    if not diagnosis: diagnosis = []
+    if not selected_method: selected_method = "unknown"
+    
+    confidence = "low"; severity_score = 30
+    if selected_method == "healthy": confidence = "high"; severity_score = 100
+    elif "blackout" in diagnosis: severity_score = 0
+    elif "intl_transit_cut" in diagnosis: severity_score = 10
+    elif "dpi_aggressive" in diagnosis or states.get('dpi') == 'dpi_aggressive': severity_score = 20
+    elif "throttling" in diagnosis: severity_score = 40
+    elif "dpi_rst" in diagnosis or states.get('dpi') == 'dpi_rst': severity_score = 50
+    elif states.get('speed') == 'speed_slow': severity_score = 70
+    elif selected_method in ["tor_proxy", "tor_snowflake", "psiphon", "dnstt"]: confidence = "medium"
+    elif selected_method in ["vless", "trojan", "hysteria2", "hy2", "tuic", "warp", "cf_worker", "balancer"]:
+        if "undetermined" in diagnosis or any(v == 'unknown' for v in states.values() if isinstance(v, str)): confidence = "medium"
+        else: confidence = "high"
+            
+    explanation = DecisionExplanation(selected=selected_method, alternatives={}, evidence=diagnosis if isinstance(diagnosis, list) else [str(diagnosis)])
+    verdict = {
+        "diagnosis": diagnosis, "selected_method": selected_method, "confidence": confidence,
+        "severity_score": severity_score, "explanation": {"selected": explanation.selected, "alternatives": explanation.alternatives, "evidence": explanation.evidence}
+    }
+    report = {"timestamp": datetime.datetime.now().isoformat(), "network_states": states, "applied_bypass": applied_bypass, "verdict": verdict}
+    try: atomic_write_json(REPORT_FILE, report)
+    except Exception as e: logger.error(f"Report write failed: {e}")
+    return verdict
+
 async def execute_bypass_and_connect(creds, dpi_state='none'):
     global LOCAL_SOCKS_PORT, LOCAL_HTTP_PORT
     async with pm.strategy_lock:
@@ -413,6 +495,11 @@ async def execute_bypass_and_connect(creds, dpi_state='none'):
 
 async def bypass_executor_wrapper(states, diagnosis_result):
     log(f"Executing bypass based on diagnosis: {diagnosis_result.condition}", "SOL")
+    
+    if not os.path.exists(UNIFIED_CONFIG_FILE) or os.path.getsize(UNIFIED_CONFIG_FILE) < 30:
+        log("No valid cnfg.json found. Running cnfg to fetch configs...", "SOL")
+        await fetch_fresh_configs(wait=True)
+        
     unified_cfg = load_unified_config()
     config_links = load_working_configs() if os.path.exists(WORKING_CONFIGS_CACHE) else unified_cfg.get("configs", [])
     parsed_configs = [parse_config_link(link) for link in config_links]
@@ -445,6 +532,7 @@ async def bypass_executor_wrapper(states, diagnosis_result):
                 await telemetry.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, False)
                 
     if selected_strategy:
+        generate_network_report(states, f"connected_via_{selected_strategy}", [diagnosis_result.condition], selected_strategy)
         explanation = DecisionExplanation(selected=selected_strategy, alternatives=alternatives, evidence=explanation_evidence)
         return True, explanation
     return False, None
