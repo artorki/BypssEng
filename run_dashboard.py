@@ -88,7 +88,8 @@ async def main():
     BypssEng.log(f"Dashboard is running on http://127.0.0.1:8080", "SOL")
     webbrowser.open(f"http://127.0.0.1:8080?token={api_server.DASHBOARD_TOKEN}")
 
-    SOCKET_PATH = os.path.join(BypssEng.DATA_DIR, "bypsseng_admin.sock")
+    # SOCKET_PATH = os.path.join(BypssEng.DATA_DIR, "bypsseng_admin.sock")
+    SOCKET_PATH = 8765
     admin_server = None
     if BypssEng.is_root_or_admin():
         try:
