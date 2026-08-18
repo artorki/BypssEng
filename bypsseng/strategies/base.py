@@ -13,17 +13,6 @@ class Strategy(ABC):
 
     @abstractmethod
     async def prepare(self) -> tuple: pass
-
-    @abstractmethod
-    async def prepare(self) -> str: pass
-
-    @abstractmethod
-    def get_command_args(self, binary_path: str, config_path: str) -> list: pass
-
-    async def start(self): pass
-    async def stop(self): pass
-    async def health_check(self): pass
-    async def get_metrics(self): pass
     
     def get_binary_path(self):
         return self.binary_paths.get(self.binary_name)
@@ -35,3 +24,15 @@ class Strategy(ABC):
         elif self.binary_name == "naive": return [binary_path, abs_config_file]
         elif self.binary_name == "psiphon": return [binary_path, '-config', abs_config_file]
         else: return [binary_path, 'run', '-c', abs_config_file]
+
+    @abstractmethod
+    async def start(self): pass
+    
+    @abstractmethod
+    async def stop(self): pass
+    
+    @abstractmethod
+    async def health_check(self): pass
+    
+    @abstractmethod
+    async def get_metrics(self): pass
