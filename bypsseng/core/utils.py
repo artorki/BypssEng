@@ -10,6 +10,8 @@ import ipaddress
 import logging
 from urllib.parse import urlparse, parse_qs, unquote
 
+logger = logging.getLogger("NetAnalyzer")
+
 def find_binary(name, core_dir):
     core_path = os.path.join(core_dir, name)
     if platform.system().lower() == 'windows' and not name.endswith('.exe'):
@@ -36,7 +38,7 @@ def atomic_write_json(filepath, data):
         try: os.chmod(filepath, 0o600)
         except Exception: pass
     except Exception as e:
-        logging.getLogger("NetAnalyzer").error(f"Failed to write {filepath}: {e}")
+        logger.error(f"Failed to write {filepath}: {e}")
 
 def b64_decode(s):
     s = s.replace('-', '+').replace('_', '/')
@@ -125,7 +127,7 @@ def parse_config_link(link):
                 creds["vmess_tls"] = vmess_data.get("tls", "")
                 creds["vmess_alter_id"] = int(vmess_data.get("aid", 0))
             except Exception as e:
-                logging.getLogger("NetAnalyzer").error(f"VMess parse error: {e}")
+                logger.error(f"VMess parse error: {e}")
                 creds["protocol"] = "unsupported"
         elif proto == "ss":
             try:
@@ -154,12 +156,12 @@ def parse_config_link(link):
                     creds["ss_method"] = method
                     creds["ss_password"] = password
             except Exception as e:
-                logging.getLogger("NetAnalyzer").error(f"SS parse error: {e}")
+                logger.error(f"SS parse error: {e}")
                 creds["protocol"] = "unsupported"
         else: creds["protocol"] = "unsupported"
         return creds
     except Exception as e:
-        logging.getLogger("NetAnalyzer").error(f"Failed to parse config {link}: {e}")
+        logger.error(f"Failed to parse config link (hidden for security). Error: {e}")
         return {"protocol": "unsupported", "raw_link": link}
 
 def get_proto_prefix(proto):
