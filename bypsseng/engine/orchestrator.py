@@ -2,7 +2,7 @@ import asyncio
 import random
 from engine.state_machine import StateMachine, EngineState
 from decision.policies import setup_decision_rules
-from engine.models import DiagnosisResult, DecisionExplanation
+from engine.models import DiagnosisResult
 from core.logger import log
 from config.models import CONFIG
 
@@ -31,22 +31,28 @@ class Orchestrator:
                     await self.diagnose()
                 elif self.sm.state == EngineState.DIAGNOSIS_READY:
                     await self.select_and_connect()
+                elif self.sm.state == EngineState.STARTING:
+                    await asyncio.sleep(1) 
                 elif self.sm.state == EngineState.VERIFYING:
                     await self.verify()
                 elif self.sm.state == EngineState.ACTIVE:
                     await self.monitor()
+                elif self.sm.state == EngineState.MONITORING:
+                    await asyncio.sleep(1)
                 elif self.sm.state == EngineState.DEGRADED:
                     log("Connection degraded. Triggering re-diagnosis...", "WARN")
                     self.sm.transition(EngineState.RESELECTING)
                     await asyncio.sleep(5)
                 else:
-                    log(f"Unknown state {self.sm.state}. Resetting to BASELINE.", "WARN")
+                    log(f"Unknown state {self.sm.state}. Resetting to RESELECTING.", "WARN")
                     self.sm.transition(EngineState.RESELECTING)
+                    
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 log(f"Orchestrator error: {e}", "ERROR")
-                self.sm.transition(EngineState.RESELECTING)
+                if self.sm.state != EngineState.RESELECTING:
+                    self.sm.transition(EngineState.RESELECTING)
                 await asyncio.sleep(10)
 
     async def diagnose(self):
@@ -61,7 +67,7 @@ class Orchestrator:
         if await check_captive_portal():
             log("CRITICAL: Captive Portal detected! Please authenticate in your browser.", "FAIL")
             self.states = {'captive': True}
-            log("Halting diagnosis for 2 minutes. Waiting for user authentication...", "WARN")
+            log("Halting diagnosis for 2 minutes...", "WARN")
             await asyncio.sleep(120)
             self.sm.transition(EngineState.RESELECTING)
             return
@@ -91,6 +97,8 @@ class Orchestrator:
         
         log(f"Decision Engine Result: {primary_diagnosis.condition} (Confidence: {primary_diagnosis.confidence})", "SOL")
 
+        self.sm.transition(EngineState.STARTING)
+        
         success = await self.bypass_executor(self.states, primary_diagnosis)
         
         if success:
@@ -98,8 +106,7 @@ class Orchestrator:
         else:
             log("Bypass execution failed. Retrying selection...", "WARN")
             await telemetry.record_strategy_outcome("all_failed", primary_diagnosis.condition, False)
-            self.sm.transition(EngineState.RESELECTING)
-            await asyncio.sleep(CONFIG.intervals.test_loop)
+            self.sm.transition(EngineState.DEGRADED)
 
     async def verify(self):
         log("Verifying connection...", "INFO")
@@ -114,8 +121,10 @@ class Orchestrator:
     async def monitor(self):
         self.sm.transition(EngineState.MONITORING)
         log("Monitoring network health...", "INFO")
+        
         from BypssEng import test_current_proxy_health
         if await test_current_proxy_health():
             await asyncio.sleep(CONFIG.intervals.test_loop + random.uniform(0, 15))
+            self.sm.state = EngineState.MONITORING
         else:
             self.sm.transition(EngineState.DEGRADED)
