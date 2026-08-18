@@ -26,7 +26,8 @@ async def main():
     async def noop_prompt(): pass
     BypssEng.prompt_and_fetch_custom_configs = noop_prompt
 
-    original_log = BypssEng.log
+    import core.logger
+    original_log = core.logger.log
     def hooked_log(msg, type="INFO", color_override=None):
         original_log(msg, type, color_override)
         log_data = {"ts": time.time(), "level": type, "msg": msg}
@@ -37,8 +38,8 @@ async def main():
         except RuntimeError: pass
         
     BypssEng.log = hooked_log
-    import core.logger
     core.logger.log = hooked_log
+    
     import engine.orchestrator
     engine.orchestrator.log = hooked_log
     import diagnosis.health
@@ -87,7 +88,19 @@ async def main():
     BypssEng.log(f"Dashboard is running on http://127.0.0.1:8080", "SOL")
     webbrowser.open(f"http://127.0.0.1:8080?token={api_server.DASHBOARD_TOKEN}")
 
-    orchestrator = Orchestrator(BypssEng.APP_DIR, BypssEng.bypass_executor_wrapper, BypssEng.LOCAL_HTTP_PORT)
+    async def broadcast_progress(data):
+        loop = asyncio.get_running_loop()
+        loop.create_task(api_server.broadcaster.broadcast("diagnosis_progress", data))
+
+    orchestrator = Orchestrator(
+        BypssEng.APP_DIR, 
+        BypssEng.bypass_executor_wrapper, 
+        BypssEng.LOCAL_HTTP_PORT,
+        fetch_config_callback=BypssEng.fetch_fresh_configs,
+        report_callback=BypssEng.generate_network_report,
+        progress_callback=broadcast_progress
+    )
+    
     engine_task = asyncio.create_task(orchestrator.run())
     
     try: await engine_task
@@ -128,3 +141,4 @@ if __name__ == "__main__":
         except Exception: pass
         loop.close()
         print("Shutdown complete.")
+
