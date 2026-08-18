@@ -1,4 +1,3 @@
-# engine/scheduler.py
 import time
 import asyncio
 from core.logger import log
@@ -7,14 +6,12 @@ from telemetry.storage import record_strategy_outcome
 class BenchmarkFramework:
     @staticmethod
     async def run_benchmark(strategy_name, test_func, condition="normal"):
-        """اجرای تست عملکرد یک استراتژی در زمان‌های بیکاری شبکه"""
         log(f"Starting benchmark for {strategy_name} under {condition}...", "SOL")
         start = time.time()
         try:
             success = await test_func()
             latency = (time.time() - start) * 1000
             
-            # ثبت نتیجه در دیتابیس تله‌متری برای یادگیری ماشین در آینده
             await record_strategy_outcome(strategy_name, condition, success)
             
             log(f"Benchmark {strategy_name}: Success={success}, Latency={latency:.2f}ms", "PASS")
