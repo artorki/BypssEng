@@ -29,6 +29,9 @@ class Orchestrator:
         self.states = {}
 
     async def run(self):
+        if self.report_callback:
+            self.report_callback({}, "starting", [], "starting")
+            
         self.sm.transition(EngineState.BASELINE)
         while True:
             try:
@@ -148,6 +151,8 @@ class Orchestrator:
         else:
             log("Bypass execution failed. Retrying selection...", "WARN")
             await telemetry.record_strategy_outcome("all_failed", primary_diagnosis.condition, False)
+            if self.report_callback:
+                self.report_callback(self.states, "failed", [primary_diagnosis.condition], "failed")
             self.sm.transition(EngineState.DEGRADED)
 
     async def verify(self):
