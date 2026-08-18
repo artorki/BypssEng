@@ -88,6 +88,19 @@ async def main():
     BypssEng.log(f"Dashboard is running on http://127.0.0.1:8080", "SOL")
     webbrowser.open(f"http://127.0.0.1:8080?token={api_server.DASHBOARD_TOKEN}")
 
+    SOCKET_PATH = os.path.join(BypssEng.DATA_DIR, "bypsseng_admin.sock")
+    admin_server = None
+    if BypssEng.is_root_or_admin():
+        try:
+            from runtime.admin_service import AdminIPCServer
+            admin_server = AdminIPCServer(SOCKET_PATH)
+            await admin_server.start()
+            BypssEng.log("Admin IPC Service started securely in the background.", "PASS")
+        except Exception as e:
+            BypssEng.log(f"Failed to start Admin IPC Service: {e}", "WARN")
+    else:
+        BypssEng.log("Admin rights missing. Network changes will run in user-space.", "WARN")
+
     async def broadcast_progress(data):
         loop = asyncio.get_running_loop()
         loop.create_task(api_server.broadcaster.broadcast("diagnosis_progress", data))
@@ -106,6 +119,8 @@ async def main():
     try: await engine_task
     except asyncio.CancelledError: pass
     finally:
+        if admin_server:
+            await admin_server.stop()
         await runner.cleanup()
         await telemetry.close_db()
 
