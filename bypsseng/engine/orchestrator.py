@@ -106,7 +106,12 @@ class Orchestrator:
         if self.progress_callback: await self.progress_callback({"phase": 2, "status": "done", "data": dns_res.condition})
         
         if self.progress_callback: await self.progress_callback({"phase": 4, "name": "DPI Inspection", "status": "running"})
-        dpi_res = await test_dpi_layer()
+        from diagnosis.dpi_kernel import test_kernel_dpi
+        kernel_dpi = await test_kernel_dpi()
+        if kernel_dpi:
+            dpi_res = kernel_dpi
+        else:
+            dpi_res = await test_dpi_layer()
         if self.progress_callback: await self.progress_callback({"phase": 4, "status": "done", "data": dpi_res.condition})
         
         if self.progress_callback: await self.progress_callback({"phase": 5, "name": "Bandwidth", "status": "running"})
