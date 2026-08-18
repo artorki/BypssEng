@@ -53,9 +53,8 @@ class Orchestrator:
                 raise
             except Exception as e:
                 log(f"Orchestrator error: {e}", "ERROR")
-                if self.sm.state != EngineState.RESELECTING:
-                    self.sm.transition(EngineState.RESELECTING)
-                await asyncio.sleep(10)
+                self.sm.state = EngineState.DEGRADED
+                await asyncio.sleep(5)
 
     async def diagnose(self):
         log("==================================================", "HEADER")
