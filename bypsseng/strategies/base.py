@@ -25,14 +25,10 @@ class Strategy(ABC):
         elif self.binary_name == "psiphon": return [binary_path, '-config', abs_config_file]
         else: return [binary_path, 'run', '-c', abs_config_file]
 
-    @abstractmethod
     async def start(self): pass
     
-    @abstractmethod
     async def stop(self): pass
     
-    @abstractmethod
     async def health_check(self): pass
     
-    @abstractmethod
     async def get_metrics(self): pass
