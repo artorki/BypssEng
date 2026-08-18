@@ -75,8 +75,11 @@ class Orchestrator:
             return
 
         if await check_direct_health():
+            log("Network is healthy (Direct access succeeded). No bypass needed.", "PASS")
             self.states = {'ip': {'internal': True, 'external': True}, 'dns': 'dns_ok', 'dpi': 'dpi_none', 'speed': 'speed_ok'}
-            self.sm.transition(EngineState.DIAGNOSIS_READY)
+            log(f"Waiting for {CONFIG.intervals.test_loop} seconds before next diagnosis cycle...", "INFO")
+            await asyncio.sleep(CONFIG.intervals.test_loop + random.uniform(0, 15))
+            self.sm.transition(EngineState.RESELECTING)
             return
 
         ip_s = await test_ip_layer()
