@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import logging
 from core.logger import log
 from config.models import CONFIG
 from engine.models import DiagnosisResult
