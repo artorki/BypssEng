@@ -17,10 +17,9 @@ import logging.handlers
 import datetime
 import signal
 import atexit
-import hashlib
-import inspect
 import re
 import ipaddress
+import argparse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PACKAGE_DIR = os.path.join(SCRIPT_DIR, "bypsseng")
@@ -28,10 +27,7 @@ if PACKAGE_DIR not in sys.path:
     sys.path.insert(0, PACKAGE_DIR)
 
 from config.models import CONFIG
-from engine.models import DiagnosisResult, DecisionExplanation
-from engine.state_machine import EngineState, StateMachine
 from engine.orchestrator import Orchestrator
-from engine.supply_chain import SupplyChainManager
 from core.logger import log, Colors
 from core.network import get_resolver
 from core.utils import parse_config_link, find_binary, get_proto_prefix, atomic_write_json
@@ -40,10 +36,10 @@ from runtime.ports import setup_dynamic_ports, release_reserved_ports
 from strategies.registry import get_strategy
 from decision.scorer import score_strategy
 import telemetry.storage as telemetry
+import aiohttp
 
 if platform.system().lower() == 'windows':
-    import asyncio.proactor_events
-    import asyncio.base_subprocess
+    import asyncio.proactor_events, asyncio.base_subprocess
     def _patched_del(self, *args, **kwargs):
         try: self.close()
         except (RuntimeError, ValueError): pass
@@ -66,13 +62,11 @@ BINARY_PATHS = {
     "naive": find_binary("naive", BIN_DIR), "psiphon": find_binary("psiphon-tunnel-core", BIN_DIR),
     "dnstt-client": find_binary("dnstt-client", BIN_DIR),
 }
-
 UNIFIED_CONFIG_FILE = os.path.join(DATA_DIR, "cnfg.json")
-SUB_CACHE_FILE = os.path.join(DATA_DIR, "my_configs.config")
 WORKING_CONFIGS_CACHE = os.path.join(DATA_DIR, "working_configs.cache")
-REPORT_FILE = os.path.join(DATA_DIR, "network_report.json")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 LOCK_FILE = os.path.join(DATA_DIR, "engine.lock")
+
 lock_fd = None
 DIAGNOSE_ONLY = False
 latency_sem = asyncio.Semaphore(10)
@@ -102,7 +96,7 @@ def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f: return json.load(f)
-        except Exception as e: logger.error(f"State load error: {e}"); return {}
+        except Exception: return {}
     return {}
 
 def save_state(state): atomic_write_json(STATE_FILE, state)
@@ -117,43 +111,229 @@ def cleanup_child_processes():
         if state.get('proxy_backed_up'):
             try: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop); loop.run_until_complete(restore_system_proxy()); loop.close()
             except Exception as e: logger.error(f"Proxy restore in cleanup failed: {e}")
-    except Exception as e: logger.error(f"State load error in cleanup: {e}")
+    except Exception: pass
     release_reserved_ports(); release_lock()
 
 atexit.register(cleanup_child_processes)
 
-async def check_config_latency(creds):
-    async with latency_sem:
-        proto = creds["protocol"]; prefix = get_proto_prefix(proto)
-        host = creds.get(f"{prefix}_server_ip"); port = creds.get(f"{prefix}_port")
-        if not host or not port: return None
-        try:
-            start = time.time(); reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=3)
-            latency = round((time.time() - start) * 1000, 2); writer.close(); await writer.wait_closed(); return latency
-        except Exception as e: logger.debug(f"Latency check error: {e}"); return None
+def is_root_or_admin():
+    if platform.system().lower() == 'windows':
+        try: return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except: return False
+    return hasattr(os, 'geteuid') and os.geteuid() == 0
 
-async def test_proxy_throughput(proxy_url, timeout=15):
-    import aiohttp
-    test_urls = ["https://speed.cloudflare.com/__down?bytes=5000000", "https://cp.cloudflare.com/generate_204"]
-    for url in test_urls:
+async def get_default_interface():
+    system = platform.system().lower()
+    if system == 'windows':
+        proc = await asyncio.create_subprocess_exec('powershell', '-Command', 'Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Select-Object -ExpandProperty InterfaceAlias', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = await proc.communicate(); return stdout.decode().strip().split('\n')[0].strip()
+    elif system == 'darwin':
         try:
-            start = time.time(); downloaded = 0; timeout_obj = aiohttp.ClientTimeout(total=timeout)
-            async with aiohttp.ClientSession(timeout=timeout_obj) as session:
-                async with session.get(url, proxy=proxy_url) as resp:
-                    resp.raise_for_status()
-                    async for chunk in resp.content.iter_chunked(65536):
-                        downloaded += len(chunk)
-                        if downloaded >= 2000000: break
-            elapsed = time.time() - start
-            if elapsed > 0 and downloaded > 10000: return (downloaded * 8 / 1000) / elapsed
-        except Exception as e: logger.debug(f"Proxy throughput error: {e}"); continue
-    return 0
+            route_proc = await asyncio.create_subprocess_exec('route', '-n', 'get', 'default', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = await route_proc.communicate(); output = stdout.decode(); iface = "en0"
+            if "interface:" in output: iface = output.split("interface:")[1].split()[0]
+            svc_proc = await asyncio.create_subprocess_exec('networksetup', '-listallhardwareports', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = await svc_proc.communicate(); lines = stdout.decode().splitlines(); current_hw = None
+            for line in lines:
+                if "Hardware Port:" in line: current_hw = line.replace("Hardware Port: ", "").strip()
+                elif "Device: " + iface in line: return current_hw
+            return "Wi-Fi"
+        except Exception: return "Wi-Fi"
+    else:
+        proc = await asyncio.create_subprocess_exec('ip', 'route', 'show', 'default', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = await proc.communicate(); output = stdout.decode().strip()
+        return output.split("dev")[1].split()[0] if "dev" in output else "eth0"
 
-async def execute_bypass_and_connect(creds, all_configs=None, dpi_state='none'):
+def extract_dns_ips(text):
+    ips = []
+    for line in text.splitlines():
+        if "DNS Servers" in line or "Statically Configured DNS" in line or "Dynamically Configured DNS" in line:
+            for token in re.findall(r'[^\s,;]+', line):
+                try: ipaddress.ip_address(token); ips.append(token)
+                except ValueError: pass
+    if not ips:
+        for token in re.findall(r'[^\s,;]+', text):
+            try: ipaddress.ip_address(token); ips.append(token)
+            except ValueError: pass
+    return ips
+
+async def get_current_dns():
+    system = platform.system().lower(); interface = await get_default_interface()
+    try:
+        if system == 'windows':
+            v4_out = ""; v6_out = ""
+            try:
+                p1 = await asyncio.create_subprocess_exec('netsh', 'interface', 'ip', 'show', 'dns', f'name="{interface}"', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, _ = await p1.communicate(); v4_out = stdout.decode()
+            except: pass
+            try:
+                p2 = await asyncio.create_subprocess_exec('netsh', 'interface', 'ipv6', 'show', 'dns', f'name="{interface}"', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, _ = await p2.communicate(); v6_out = stdout.decode()
+            except: pass
+            return json.dumps({"v4_mode": "DHCP" if "DHCP" in v4_out else "STATIC", "v4_servers": extract_dns_ips(v4_out), "v6_mode": "DHCP" if "DHCP" in v6_out else "STATIC", "v6_servers": extract_dns_ips(v6_out)})
+        elif system == 'darwin':
+            proc = await asyncio.create_subprocess_exec('networksetup', '-getdnsservers', interface, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = await proc.communicate(); out = stdout.decode().strip(); return out if out else "EMPTY"
+        else:
+            if shutil.which('resolvectl'):
+                proc = await asyncio.create_subprocess_exec('resolvectl', 'dns', interface, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, _ = await proc.communicate(); out = stdout.decode().strip(); ips = extract_dns_ips(out); return " ".join(ips) if ips else "EMPTY"
+            return "EMPTY"
+    except Exception: return "EMPTY"
+
+async def restore_system_dns():
+    state = load_state()
+    if not state.get('dns_changed'): return True
+    interface = state.get('interface') or await get_default_interface()
+    if not interface: return False
+    original_dns = state.get('original_dns', ""); system = platform.system().lower()
+    try:
+        if system == 'windows':
+            try: dns_data = json.loads(original_dns)
+            except Exception: state['dns_changed'] = False; state['dns_backed_up'] = False; save_state(state); return False
+            if dns_data.get("v4_mode") == "DHCP":
+                p = await asyncio.create_subprocess_exec('netsh', 'interface', 'ip', 'set', 'dns', f'name="{interface}"', 'source=dhcp', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+            else:
+                v4_ips = dns_data.get("v4_servers", [])
+                if v4_ips:
+                    p = await asyncio.create_subprocess_exec('netsh', 'interface', 'ip', 'set', 'dns', f'name="{interface}"', 'static', v4_ips[0], 'primary', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+                    for i, ip in enumerate(v4_ips[1:], start=2):
+                        p = await asyncio.create_subprocess_exec('netsh', 'interface', 'ip', 'add', 'dns', f'name="{interface}"', ip, f'index={i}', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+            p_flush = await asyncio.create_subprocess_exec('ipconfig', '/flushdns', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p_flush.communicate()
+        elif system == 'darwin':
+            if original_dns and "There aren't any DNS Servers" not in original_dns:
+                dns_list = original_dns.split()
+                p = await asyncio.create_subprocess_exec('networksetup', '-setdnsservers', interface, *dns_list, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+            else:
+                p = await asyncio.create_subprocess_exec('networksetup', '-setdnsservers', interface, 'empty', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+        else:
+            if shutil.which('resolvectl'):
+                if original_dns and original_dns != "EMPTY":
+                    dns_ips = original_dns.split()
+                    p = await asyncio.create_subprocess_exec('resolvectl', 'dns', interface, *dns_ips, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+                else:
+                    p = await asyncio.create_subprocess_exec('resolvectl', 'revert', interface, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+        state['dns_changed'] = False; state['dns_backed_up'] = False; state.pop('original_dns', None); save_state(state)
+        log("System DNS restored to original settings.", "PASS"); return True
+    except Exception as e: logger.error(f"DNS restore error: {e}"); return False
+
+async def get_current_proxy():
+    system = platform.system().lower()
+    try:
+        if system == 'windows':
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 0, winreg.KEY_READ)
+            enable, _ = winreg.QueryValueEx(key, 'ProxyEnable'); server = ""; override = ""
+            try: server, _ = winreg.QueryValueEx(key, 'ProxyServer')
+            except: pass
+            try: override, _ = winreg.QueryValueEx(key, 'ProxyOverride')
+            except: pass
+            winreg.CloseKey(key); return {"valid": True, "enabled": bool(enable), "server": server, "override": override}
+        elif system == 'darwin':
+            interface = await get_default_interface()
+            proc = await asyncio.create_subprocess_exec('networksetup', '-getwebproxy', interface, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = await proc.communicate(); out = stdout.decode()
+            enabled = "Enabled: Yes" in out; server = re.search(r"Server: (\S+)", out); port = re.search(r"Port: (\d+)", out)
+            sproc = await asyncio.create_subprocess_exec('networksetup', '-getsecurewebproxy', interface, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            sout, _ = await sproc.communicate(); sout_str = sout.decode()
+            s_enabled = "Enabled: Yes" in sout_str; s_server = re.search(r"Server: (\S+)", sout_str); s_port = re.search(r"Port: (\d+)", sout_str)
+            return {"valid": True, "web_enabled": enabled, "secure_enabled": s_enabled, "server": f"{server.group(1)}:{port.group(1)}" if server and port else "", "secure_server": f"{s_server.group(1)}:{s_port.group(1)}" if s_server and s_port else ""}
+        else:
+            if not shutil.which('gsettings'): return {"valid": False, "enabled": False, "server": ""}
+            mode_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy', 'mode', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = await mode_proc.communicate(); mode = stdout.decode().strip().strip("'")
+            if mode == 'manual':
+                host_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'host', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                host, _ = await host_proc.communicate()
+                port_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'port', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                port, _ = await port_proc.communicate()
+                http_host = host.decode().strip().strip("'")
+                return {"valid": True, "enabled": True, "server": f"{http_host}:{port.decode().strip().strip(chr(39))}" if http_host else ""}
+            return {"valid": True, "enabled": False, "server": ""}
+    except Exception: return {"valid": False, "enabled": False, "server": ""}
+
+async def restore_system_proxy():
+    state = load_state()
+    if not state.get('proxy_backed_up'): return True
+    original = state.get('original_proxy', {})
+    if not original.get("valid"): return False
+    system = platform.system().lower()
+    try:
+        if system == 'windows':
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 0, winreg.KEY_ALL_ACCESS)
+            if original.get("enabled"): winreg.SetValueEx(key, 'ProxyEnable', 0, winreg.REG_DWORD, 1)
+            else: winreg.SetValueEx(key, 'ProxyEnable', 0, winreg.REG_DWORD, 0)
+            if original.get("server"): winreg.SetValueEx(key, 'ProxyServer', 0, winreg.REG_SZ, original["server"])
+            winreg.CloseKey(key)
+            ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0); ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
+        elif system == 'darwin':
+            interface = await get_default_interface()
+            if original.get("web_enabled") and original.get("server"):
+                host, port = original["server"].rsplit(":", 1); host = host.strip("[]")
+                p = await asyncio.create_subprocess_exec('networksetup', '-setwebproxy', interface, host, port, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+            else:
+                p = await asyncio.create_subprocess_exec('networksetup', '-setwebproxystate', interface, 'off', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+        else:
+            if not shutil.which('gsettings'): return False
+            cmds = [['gsettings', 'set', 'org.gnome.system.proxy', 'mode', 'none']] if not original.get("enabled") else [['gsettings', 'set', 'org.gnome.system.proxy', 'mode', 'manual']]
+            for cmd in cmds:
+                p = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); await p.communicate()
+        state['proxy_backed_up'] = False; state['proxy_enabled'] = original.get("enabled", False); state.pop("original_proxy", None); save_state(state)
+        log("System proxy restored to original settings.", "PASS"); return True
+    except Exception as e: logger.error(f"Proxy restore error: {e}"); return False
+
+async def set_system_proxy(enable, port=None):
+    if DIAGNOSE_ONLY: return True
+    if not port: port = LOCAL_HTTP_PORT
+    system = platform.system().lower(); state = load_state()
+    if enable and not state.get('proxy_backed_up'):
+        state['original_proxy'] = await get_current_proxy()
+        if not state['original_proxy'].get("valid"): return False
+        state['proxy_backed_up'] = True; save_state(state)
+    try:
+        if system == 'windows':
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 0, winreg.KEY_ALL_ACCESS)
+            if enable:
+                winreg.SetValueEx(key, 'ProxyEnable', 0, winreg.REG_DWORD, 1); winreg.SetValueEx(key, 'ProxyServer', 0, winreg.REG_SZ, f'127.0.0.1:{port}'); winreg.SetValueEx(key, 'ProxyOverride', 0, winreg.REG_SZ, 'localhost;127.0.0.1;<local>')
+            else: winreg.SetValueEx(key, 'ProxyEnable', 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(key)
+            ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0); ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0)
+        elif system == 'darwin':
+            interface = await get_default_interface()
+            if enable:
+                p1 = await asyncio.create_subprocess_exec('networksetup', '-setwebproxy', interface, '127.0.0.1', str(port), stdout=subprocess.PIPE, stderr=subprocess.PIPE); await p1.communicate()
+                p2 = await asyncio.create_subprocess_exec('networksetup', '-setsecurewebproxy', interface, '127.0.0.1', str(port), stdout=subprocess.PIPE, stderr=subprocess.PIPE); await p2.communicate()
+            else:
+                p1 = await asyncio.create_subprocess_exec('networksetup', '-setwebproxystate', interface, 'off', stdout=subprocess.PIPE, stderr=subprocess.PIPE); await p1.communicate()
+                p2 = await asyncio.create_subprocess_exec('networksetup', '-setsecurewebproxystate', interface, 'off', stdout=subprocess.PIPE, stderr=subprocess.PIPE); await p2.communicate()
+        else:
+            if not shutil.which('gsettings'): return False
+            if enable: cmds = [['gsettings', 'set', 'org.gnome.system.proxy', 'mode', 'manual'], ['gsettings', 'set', 'org.gnome.system.proxy.http', 'host', '127.0.0.1'], ['gsettings', 'set', 'org.gnome.system.proxy.http', 'port', str(port)]]
+            else: cmds = [['gsettings', 'set', 'org.gnome.system.proxy', 'mode', 'none']]
+            for cmd in cmds:
+                p = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE); await p.communicate()
+        state = load_state(); state['proxy_enabled'] = enable; save_state(state); return True
+    except Exception: return False
+
+def load_unified_config():
+    if not os.path.exists(UNIFIED_CONFIG_FILE):
+        template = {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None, "psiphon": None, "dnstt": None}
+        atomic_write_json(UNIFIED_CONFIG_FILE, template); return template
+    try:
+        with open(UNIFIED_CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
+    except Exception: return {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None, "psiphon": None, "dnstt": None}
+
+def load_working_configs():
+    if not os.path.exists(WORKING_CONFIGS_CACHE): return []
+    with open(WORKING_CONFIGS_CACHE, "r") as f: return [line.strip() for line in f.readlines() if line.strip()]
+
+async def execute_bypass_and_connect(creds, dpi_state='none'):
     global LOCAL_SOCKS_PORT, LOCAL_HTTP_PORT
     async with pm.xray_lock:
-        old_xray_proc = pm.xray_proc if (pm.xray_proc and pm.xray_proc.returncode is None) else None
-        old_proxy_active = old_xray_proc is not None
+        old_proc = pm.active_proc if (pm.active_proc and pm.active_proc.returncode is None) else None
+        old_proxy_active = old_proc is not None
         old_socks_port = LOCAL_SOCKS_PORT; old_http_port = LOCAL_HTTP_PORT
 
         LOCAL_SOCKS_PORT, LOCAL_HTTP_PORT = setup_dynamic_ports()
@@ -163,38 +343,31 @@ async def execute_bypass_and_connect(creds, all_configs=None, dpi_state='none'):
             for t in log_tasks:
                 try: t.cancel()
                 except Exception: pass
-            if pm.xray_proc and pm.xray_proc.returncode is None and pm.xray_proc is not old_xray_proc:
-                try: pm.xray_proc.terminate(); await asyncio.wait_for(pm.xray_proc.wait(), timeout=3)
+            if pm.active_proc and pm.active_proc.returncode is None and pm.active_proc is not old_proc:
+                try: pm.active_proc.terminate(); await asyncio.wait_for(pm.active_proc.wait(), timeout=3)
                 except Exception:
-                    try: pm.xray_proc.kill()
-                    except Exception as e: logger.error(f"Kill new xray error: {e}")
+                    try: pm.active_proc.kill()
+                    except Exception as e: logger.error(f"Kill process error: {e}")
             release_reserved_ports()
             if old_proxy_active:
-                pm.xray_proc = old_xray_proc; LOCAL_SOCKS_PORT = old_socks_port; LOCAL_HTTP_PORT = old_http_port
+                pm.active_proc = old_proc; LOCAL_SOCKS_PORT = old_socks_port; LOCAL_HTTP_PORT = old_http_port
             else:
-                pm.xray_proc = None; await restore_system_proxy()
+                pm.active_proc = None; await restore_system_proxy()
 
-        latency = await check_config_latency(creds)
-        if latency is None and creds["protocol"] not in ("cloudflare_worker", "tor_snowflake", "warp", "tor_proxy", "psiphon", "dnstt", "hysteria2", "tuic"):
-            proto_prefix = get_proto_prefix(creds['protocol']); server_ip = creds.get(f"{proto_prefix}_server_ip")
-            log(f"  -> Server {server_ip} is unreachable. Skipping...", "WARN"); await restore_state_on_failure(); return False
-
-        strategy = get_strategy(creds, all_configs, dpi_state, LOCAL_SOCKS_PORT, LOCAL_HTTP_PORT, DATA_DIR, BINARY_PATHS)
-        if not strategy: log(f"Strategy for {creds['protocol']} not found.", "FAIL"); await restore_state_on_failure(); return False
+        strategy = get_strategy(creds, None, dpi_state, LOCAL_SOCKS_PORT, LOCAL_HTTP_PORT, DATA_DIR, BINARY_PATHS)
+        if not strategy: await restore_state_on_failure(); return False
 
         config_file, binary_name = await strategy.prepare()
         if not config_file: await restore_state_on_failure(); return False
 
         binary_path = strategy.get_binary_path()
-        if not binary_path or not os.path.isfile(binary_path): log(f"{binary_name} is not installed.", "FAIL"); await restore_state_on_failure(); return False
-
         abs_config_file = os.path.join(DATA_DIR, config_file)
         cmd_args = strategy.get_command_args(binary_path, abs_config_file)
 
         try:
             release_reserved_ports()
-            pm.xray_proc = await asyncio.create_subprocess_exec(*cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            proc = pm.xray_proc
+            pm.active_proc = await asyncio.create_subprocess_exec(*cmd_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc = pm.active_proc
             
             async def tail_logs(stream, prefix):
                 while True:
@@ -208,7 +381,6 @@ async def execute_bypass_and_connect(creds, all_configs=None, dpi_state='none'):
             await asyncio.sleep(3)
             proxy = f"http://127.0.0.1:{LOCAL_HTTP_PORT}"
             
-            import aiohttp
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
                 success = False
                 for url in ["https://cp.cloudflare.com/generate_204", "https://www.google.com/generate_204"]:
@@ -218,7 +390,7 @@ async def execute_bypass_and_connect(creds, all_configs=None, dpi_state='none'):
                             if resp.status in [204, 200, 301, 302]:
                                 log(f"Successfully connected via {creds['protocol'].upper()}!", "PASS")
                                 if not await set_system_proxy(True, LOCAL_HTTP_PORT): await restore_state_on_failure(); return False
-                                if old_xray_proc and old_xray_proc.returncode is None: old_xray_proc.terminate()
+                                if old_proc and old_proc.returncode is None: old_proc.terminate()
                                 success = True; break
                     except Exception: continue
                 if not success:
@@ -230,28 +402,23 @@ async def execute_bypass_and_connect(creds, all_configs=None, dpi_state='none'):
 
 async def bypass_executor_wrapper(states, diagnosis_result):
     log(f"Executing bypass based on diagnosis: {diagnosis_result.condition}", "SOL")
-    
     unified_cfg = load_unified_config()
     config_links = load_working_configs() if os.path.exists(WORKING_CONFIGS_CACHE) else unified_cfg.get("configs", [])
-    
     parsed_configs = [parse_config_link(link) for link in config_links]
     valid_configs = [c for c in parsed_configs if c["protocol"] != "unsupported"]
-    
     if unified_cfg.get("warp"): valid_configs.append({"protocol": "warp", "warp_data": unified_cfg["warp"]})
     if unified_cfg.get("cloudflare_worker"): valid_configs.append({"protocol": "cloudflare_worker", "worker_data": unified_cfg["cloudflare_worker"]})
-    if unified_cfg.get("psiphon") is not None: valid_configs.append({"protocol": "psiphon"})
     valid_configs.extend([{"protocol": "tor_proxy"}, {"protocol": "tor_snowflake"}])
 
     scored_candidates = []
     for c in valid_configs:
         score = await score_strategy(c["protocol"], states)
         scored_candidates.append((c, score))
-    
     scored_candidates.sort(key=lambda x: x[1].score, reverse=True)
     
     for creds, score in scored_candidates:
         if score.score > 0.1:
-            log(f"Attempting strategy: {creds['protocol']} (Score: {score.score:.2f}, Reasons: {score.reasons})", "INFO")
+            log(f"Attempting strategy: {creds['protocol']} (Score: {score.score:.2f})", "INFO")
             success = await execute_bypass_and_connect(creds, dpi_state=states.get('dpi'))
             if success:
                 await telemetry.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, True)
@@ -261,10 +428,9 @@ async def bypass_executor_wrapper(states, diagnosis_result):
     return False
 
 async def test_current_proxy_health():
-    if not pm.xray_proc or pm.xray_proc.returncode is not None: return False
+    if not pm.active_proc or pm.active_proc.returncode is not None: return False
     proxy_url = f"http://127.0.0.1:{LOCAL_HTTP_PORT}"
     try:
-        import aiohttp
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
             async with s.get("https://cp.cloudflare.com/generate_204", proxy=proxy_url) as r: return r.status in [204, 200]
     except Exception: return False
@@ -276,29 +442,21 @@ async def main():
     
     await telemetry.init_db()
     await telemetry.cleanup_old_logs()
-    
-    acquire_lock()
-    pm.kill_stale_processes()
+    acquire_lock(); pm.kill_stale_processes()
     
     log("Performing startup recovery policy...", "SOL")
     state = load_state()
-    if state.get('proxy_backed_up') or state.get('proxy_enabled'):
-        if not await restore_system_proxy(): sys.exit(1)
-    if state.get('dns_backed_up') or state.get('dns_changed'):
-        if not await restore_system_dns(): sys.exit(1)
+    if state.get('proxy_backed_up') and not await restore_system_proxy(): sys.exit(1)
+    if state.get('dns_changed') and not await restore_system_dns(): sys.exit(1)
 
     print(f"{Colors.BOLD}Advanced Analyzer & Auto-Bypass Engine Started (CLI Mode).{Colors.ENDC}\n")
-
     orchestrator = Orchestrator(APP_DIR, bypass_executor_wrapper)
-    try:
-        await orchestrator.run()
-    finally:
-        await telemetry.close_db()
+    try: await orchestrator.run()
+    finally: await telemetry.close_db()
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="BypssEng Advanced Anti-Censorship Engine")
-    parser.add_argument("--diagnose-only", action="store_true", help="Only run tests, do not change system proxy/DNS")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--diagnose-only", action="store_true")
     args = parser.parse_args()
     if args.diagnose_only: DIAGNOSE_ONLY = True
 
@@ -311,4 +469,4 @@ if __name__ == "__main__":
             if pending: loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.run_until_complete(loop.shutdown_asyncgens()); loop.close()
     except KeyboardInterrupt: log("Exiting...", "INFO")
-    finally: cleanup_child_processes(); sys.exit(0)
+    finally: pm.cleanup_child_processes(); sys.exit(0)
