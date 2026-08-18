@@ -9,8 +9,8 @@ logger = logging.getLogger("NetAnalyzer")
 
 class AdminIPCServer:
 
-    def __init__(self, socket_path):
-        self.socket_path = socket_path
+    def __init__(self, port):
+        self.port = port
         self.server = None
 
     async def handle_request(self, reader, writer):
@@ -35,10 +35,8 @@ class AdminIPCServer:
         writer.close()
 
     async def start(self):
-        if os.path.exists(self.socket_path):
-            os.remove(self.socket_path)
-        self.server = await asyncio.start_unix_server(self.handle_request, path=self.socket_path)
-        log("Admin IPC Server started securely.", "PASS")
+        self.server = await asyncio.start_server(self.handle_request, '127.0.0.1', self.port)
+        log(f"Admin IPC Server started securely on port {self.port}", "PASS")
 
     async def stop(self):
         if self.server:
@@ -46,14 +44,14 @@ class AdminIPCServer:
             await self.server.wait_closed()
 
 class AdminIPCClient:
-    def __init__(self, socket_path):
-        self.socket_path = socket_path
+    def __init__(self, port):
+        self.port = port
 
     async def send_command(self, action, data=None):
         req = {"action": action}
         if data: req.update(data)
         try:
-            reader, writer = await asyncio.open_unix_connection(path=self.socket_path)
+            reader, writer = await asyncio.open_connection('127.0.0.1', self.port)
             writer.write(json.dumps(req).encode())
             await writer.drain()
             response = await reader.read(4096)
