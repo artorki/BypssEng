@@ -15,7 +15,6 @@ import BypssEng
 import telemetry.storage as telemetry
 import api_server
 from engine.orchestrator import Orchestrator
-from BypssEng import bypass_executor_wrapper, APP_DIR, cleanup_child_processes
 
 async def main():
     await telemetry.init_db()
@@ -36,11 +35,32 @@ async def main():
             loop.create_task(api_server.broadcaster.broadcast("log", log_data))
             loop.create_task(telemetry.insert_log(type, msg))
         except RuntimeError: pass
+        
     BypssEng.log = hooked_log
+    import core.logger
+    core.logger.log = hooked_log
+    import engine.orchestrator
+    engine.orchestrator.log = hooked_log
+    import diagnosis.health
+    diagnosis.health.log = hooked_log
+    import diagnosis.connectivity
+    diagnosis.connectivity.log = hooked_log
+    import diagnosis.dns
+    diagnosis.dns.log = hooked_log
+    import diagnosis.tls
+    diagnosis.tls.log = hooked_log
+    import diagnosis.bandwidth
+    diagnosis.bandwidth.log = hooked_log
+    import diagnosis.transport
+    diagnosis.transport.log = hooked_log
+    import runtime.process
+    runtime.process.log = hooked_log
+    import runtime.ports
+    runtime.ports.log = hooked_log
 
     original_report = BypssEng.generate_network_report
-    def hooked_report(states, applied_bypass="none", diagnosis=None, selected_method=None, explanation=None):
-        verdict = original_report(states, applied_bypass, diagnosis, selected_method, explanation)
+    def hooked_report(states, applied_bypass="none", diagnosis=None, selected_method=None):
+        verdict = original_report(states, applied_bypass, diagnosis, selected_method)
         report = {"states": states, "applied_bypass": applied_bypass, "diagnosis": diagnosis, "selected_method": selected_method, "verdict": verdict}
         try:
             loop = asyncio.get_running_loop()
@@ -67,7 +87,7 @@ async def main():
     BypssEng.log(f"Dashboard is running on http://127.0.0.1:8080", "SOL")
     webbrowser.open(f"http://127.0.0.1:8080?token={api_server.DASHBOARD_TOKEN}")
 
-    orchestrator = Orchestrator(APP_DIR, bypass_executor_wrapper)
+    orchestrator = Orchestrator(BypssEng.APP_DIR, BypssEng.bypass_executor_wrapper, BypssEng.LOCAL_HTTP_PORT)
     engine_task = asyncio.create_task(orchestrator.run())
     
     try: await engine_task
