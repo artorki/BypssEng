@@ -1,4 +1,3 @@
-# telemetry/storage.py
 import aiosqlite
 import json
 import os
@@ -16,7 +15,6 @@ async def init_db():
     await _db_conn.execute('''CREATE TABLE IF NOT EXISTS network_events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, data TEXT NOT NULL)''')
     await _db_conn.execute('''CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, level TEXT, message TEXT)''')
     
-    # ارتقای جدول برای ذخیره دلیل انتخاب (Explainability)
     await _db_conn.execute('''CREATE TABLE IF NOT EXISTS decision_telemetry (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts REAL NOT NULL,
@@ -79,3 +77,10 @@ async def get_decision_history(limit=50):
             rows = await cursor.fetchall()
             return [{"ts": row[0], "diagnosis": json.loads(row[1]), "confidence": row[2], "selected_strategy": row[3], "score": row[4], "result": row[5], "explanation": json.loads(row[6]) if row[6] else {}} for row in rows]
     return []
+
+async def cleanup_old_logs():
+    if _db_conn:
+        cutoff_time = time.time() - (7 * 24 * 60 * 60)
+        await _db_conn.execute("DELETE FROM logs WHERE ts < ?", (cutoff_time,))
+        await _db_conn.execute("DELETE FROM network_events WHERE ts < ?", (cutoff_time,))
+        await _db_conn.commit()
