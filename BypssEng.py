@@ -28,6 +28,7 @@ if PACKAGE_DIR not in sys.path:
 
 from config.models import CONFIG
 from engine.orchestrator import Orchestrator
+from engine.models import DecisionExplanation
 from core.logger import log, Colors
 from core.network import get_resolver
 from core.utils import parse_config_link, find_binary, get_proto_prefix, atomic_write_json
@@ -39,7 +40,8 @@ import telemetry.storage as telemetry
 import aiohttp
 
 if platform.system().lower() == 'windows':
-    import asyncio.proactor_events, asyncio.base_subprocess
+    import asyncio.proactor_events
+    import asyncio.base_subprocess
     def _patched_del(self, *args, **kwargs):
         try: self.close()
         except (RuntimeError, ValueError): pass
@@ -115,6 +117,15 @@ def cleanup_child_processes():
     release_reserved_ports(); release_lock()
 
 atexit.register(cleanup_child_processes)
+
+def check_dependencies():
+    required = ["xray", "hysteria", "tor", "tuic", "naive"]
+    missing = [n for n in required if not BINARY_PATHS.get(n)]
+    if missing: log(f"Warning: The following core binaries are missing: {', '.join(missing)}", "WARN")
+    if not BINARY_PATHS.get("snowflake") and not BINARY_PATHS.get("lyrebird"): log("Warning: Pluggable transports missing.", "WARN")
+    if not BINARY_PATHS.get("psiphon"): log("Warning: Psiphon binary is missing.", "WARN")
+    if not BINARY_PATHS.get("dnstt-client"): log("Warning: Dnstt-client binary is missing.", "WARN")
+    if not missing and (BINARY_PATHS.get("snowflake") or BINARY_PATHS.get("lyrebird")): log("All dependencies are present.", "PASS")
 
 def is_root_or_admin():
     if platform.system().lower() == 'windows':
@@ -331,7 +342,7 @@ def load_working_configs():
 
 async def execute_bypass_and_connect(creds, dpi_state='none'):
     global LOCAL_SOCKS_PORT, LOCAL_HTTP_PORT
-    async with pm.xray_lock:
+    async with pm.strategy_lock:
         old_proc = pm.active_proc if (pm.active_proc and pm.active_proc.returncode is None) else None
         old_proxy_active = old_proc is not None
         old_socks_port = LOCAL_SOCKS_PORT; old_http_port = LOCAL_HTTP_PORT
@@ -416,24 +427,27 @@ async def bypass_executor_wrapper(states, diagnosis_result):
         scored_candidates.append((c, score))
     scored_candidates.sort(key=lambda x: x[1].score, reverse=True)
     
+    alternatives = {}
+    selected_strategy = None
+    explanation_evidence = []
+    
     for creds, score in scored_candidates:
         if score.score > 0.1:
             log(f"Attempting strategy: {creds['protocol']} (Score: {score.score:.2f})", "INFO")
             success = await execute_bypass_and_connect(creds, dpi_state=states.get('dpi'))
             if success:
+                selected_strategy = creds["protocol"]
+                explanation_evidence = score.reasons
                 await telemetry.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, True)
-                return True
+                break
             else:
+                alternatives[creds["protocol"]] = score.score
                 await telemetry.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, False)
-    return False
-
-async def test_current_proxy_health():
-    if not pm.active_proc or pm.active_proc.returncode is not None: return False
-    proxy_url = f"http://127.0.0.1:{LOCAL_HTTP_PORT}"
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get("https://cp.cloudflare.com/generate_204", proxy=proxy_url) as r: return r.status in [204, 200]
-    except Exception: return False
+                
+    if selected_strategy:
+        explanation = DecisionExplanation(selected=selected_strategy, alternatives=alternatives, evidence=explanation_evidence)
+        return True, explanation
+    return False, None
 
 async def main():
     import datetime
@@ -442,7 +456,7 @@ async def main():
     
     await telemetry.init_db()
     await telemetry.cleanup_old_logs()
-    acquire_lock(); pm.kill_stale_processes()
+    acquire_lock(); pm.kill_stale_processes(); check_dependencies()
     
     log("Performing startup recovery policy...", "SOL")
     state = load_state()
@@ -450,7 +464,7 @@ async def main():
     if state.get('dns_changed') and not await restore_system_dns(): sys.exit(1)
 
     print(f"{Colors.BOLD}Advanced Analyzer & Auto-Bypass Engine Started (CLI Mode).{Colors.ENDC}\n")
-    orchestrator = Orchestrator(APP_DIR, bypass_executor_wrapper)
+    orchestrator = Orchestrator(APP_DIR, bypass_executor_wrapper, LOCAL_HTTP_PORT)
     try: await orchestrator.run()
     finally: await telemetry.close_db()
 
