@@ -1,10 +1,13 @@
-# decision/policies.py
 from engine.rule_engine import RuleEngine
 from engine.models import DiagnosisResult
 
 def setup_decision_rules():
     engine = RuleEngine()
     
+    engine.add_rule(
+        lambda s: s.get('captive', False) == True,
+        lambda s: DiagnosisResult(condition="captive_portal", confidence=1.0, evidence=["captive_portal_detected"], severity="high")
+    )
     engine.add_rule(
         lambda s: s.get('dns') in ['dns_dropped', 'dns_hijacked'],
         lambda s: DiagnosisResult(condition="dns_interference", confidence=0.9, evidence=["dns_disruption_detected"], severity="high")
