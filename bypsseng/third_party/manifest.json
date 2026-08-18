@@ -1,0 +1,10 @@
+{
+    "binaries": {
+        "xray": {"url": "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip", "sha256": ""},
+        "hysteria": {"url": "https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64", "sha256": ""}
+    },
+    "geofiles": {
+        "geoip.dat": {"url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat", "sha256": ""},
+        "geosite.dat": {"url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat", "sha256": ""}
+    }
+}
