@@ -259,7 +259,7 @@ async def get_current_proxy():
             if mode == 'manual':
                 host_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'host', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 host, _ = await host_proc.communicate()
-                port_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'port', stdout=subprocess.PIPE, stderr=subprocessPIPE)
+                port_proc = await asyncio.create_subprocess_exec('gsettings', 'get', 'org.gnome.system.proxy.http', 'port', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 port, _ = await port_proc.communicate()
                 http_host = host.decode().strip().strip("'")
                 return {"valid": True, "enabled": True, "server": f"{http_host}:{port.decode().strip().strip(chr(39))}" if http_host else ""}
@@ -401,6 +401,8 @@ def generate_network_report(states, applied_bypass="none", diagnosis=None, selec
     
     confidence = "low"; severity_score = 30
     if selected_method == "healthy": confidence = "high"; severity_score = 100
+    elif selected_method == "starting": confidence = "low"; severity_score = 0
+    elif selected_method == "failed": confidence = "low"; severity_score = 10
     elif "blackout" in diagnosis: severity_score = 0
     elif "intl_transit_cut" in diagnosis: severity_score = 10
     elif "dpi_aggressive" in diagnosis or states.get('dpi') == 'dpi_aggressive': severity_score = 20
@@ -519,7 +521,7 @@ async def bypass_executor_wrapper(states, diagnosis_result):
     explanation_evidence = []
     
     for creds, score in scored_candidates:
-        if score.score > 0.1:
+        if score.score > 0.1 or creds["protocol"] in ["tor_proxy", "tor_snowflake", "psiphon"]:
             log(f"Attempting strategy: {creds['protocol']} (Score: {score.score:.2f})", "INFO")
             success = await execute_bypass_and_connect(creds, dpi_state=states.get('dpi'))
             if success:
@@ -552,7 +554,15 @@ async def main():
     if state.get('dns_changed') and not await restore_system_dns(): sys.exit(1)
 
     print(f"{Colors.BOLD}Advanced Analyzer & Auto-Bypass Engine Started (CLI Mode).{Colors.ENDC}\n")
-    orchestrator = Orchestrator(APP_DIR, bypass_executor_wrapper, LOCAL_HTTP_PORT)
+    
+    orchestrator = Orchestrator(
+        APP_DIR, 
+        bypass_executor_wrapper, 
+        LOCAL_HTTP_PORT,
+        fetch_config_callback=fetch_fresh_configs,
+        report_callback=generate_network_report
+    )
+    
     try: await orchestrator.run()
     finally: await telemetry.close_db()
 
