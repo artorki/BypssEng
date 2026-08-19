@@ -25,14 +25,20 @@ logging.basicConfig(filename='cnfg.log', level=logging.INFO, format='%(asctime)s
 logger = logging.getLogger("Fetcher")
 
 FREE_CONFIGS_URLS = [
+    "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/mixed",
+    "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/vless",
+    "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/trojan",
+    
+    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/mixed",
+    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/vless",
+    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/trojan",
+    
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
     "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2",
     "https://raw.githubusercontent.com/mfuu/v2ray/master/v2",
-    "https://raw.githubusercontent.com/learnhard-cn/free_proxy_ss/main/v2ray/v2ray.txt",
-    "https://raw.githubusercontent.com/aiboboxx/clash/main/v2ray.txt",
-    "https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray.txt",
     "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
-    "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/All_Configs_Sub.txt"
+    "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/All_Configs_Sub.txt",
+    "https://raw.githubusercontent.com/AzadNetCh/NetV2/main/qsub"
 ]
 
 OUTPUT_FILE = "cnfg.json"
