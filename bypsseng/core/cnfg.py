@@ -1,5 +1,3 @@
-# BypssEng - artorki
-
 import os
 import sys
 import time
@@ -13,6 +11,7 @@ import aiohttp
 import socket
 import ssl
 import logging
+import re
 from urllib.parse import urlparse, parse_qs, unquote
 
 try:
@@ -233,32 +232,76 @@ def deduplicate_configs(links):
             
     return clean_links
 
-async def is_port_open(host, port, timeout=1.5):
+latency_sem = asyncio.Semaphore(50) 
+
+async def test_tcp_latency(host, port, timeout=1.5):
+
+    start = time.time()
     try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
-        writer.close()
-        await writer.wait_closed()
-        return True
+        async with latency_sem:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+            latency = round((time.time() - start) * 1000, 2)
+            writer.close()
+            await writer.wait_closed()
+            return latency
+    except:
+        return None
+
+async def test_tls_handshake(host, port, sni):
+
+    if not sni:
+        return False
+    try:
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+        async with latency_sem:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host=host, port=port, ssl=ssl_ctx, server_hostname=sni), 
+                timeout=2.0
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
     except:
         return False
 
 async def filter_alive_configs(links, use_proxy):
-    logger.info(f"Testing TCP connectivity for {len(links)} configs (Timeout: 1.5s per config)...")
+    logger.info(f"Testing TCP latency and TLS Handshake for {len(links)} configs...")
     
     async def check_link(link):
         host, port = extract_host_port(link)
-        if host and port:
-            if not use_proxy or random.random() > 0.5:
-                if not await is_port_open(host, port):
-                    return None
-        return link
+        if not host or not port:
+            return (None, 99999)
+        
+        latency = await test_tcp_latency(host, port)
+        if latency is None:
+            return (None, 99999)
+    
+        if "sni=" in link or "tls" in link or "reality" in link:
+            sni_match = re.search(r'sni=([^&]+)', link) or re.search(r'host=([^&]+)', link)
+            if sni_match:
+                sni = sni_match.group(1)
+            
+                if not await test_tls_handshake(host, port, sni):
+                    return (None, 99999)
+        
+        return (link, latency)
 
     tasks = [check_link(link) for link in links]
     results = await asyncio.gather(*tasks)
-    alive_links = [r for r in results if r is not None]
     
-    logger.info(f"Alive configs: {len(alive_links)}/{len(links)}")
-    return alive_links
+
+    alive_links = [(r, lat) for r, lat in results if r is not None]
+    
+    
+    alive_links.sort(key=lambda x: x[1])
+    
+
+    top_links = [link for link, lat in alive_links[:50]]
+    
+    logger.info(f"Alive and fast configs: {len(top_links)}/{len(links)}")
+    return top_links
 
 def extract_cloudflare_worker(configs):
     workers_found = []
@@ -337,6 +380,7 @@ async def main():
                     output_data["warp"] = existing_data["warp"]
                 if "cloudflare_worker" in existing_data and existing_data["cloudflare_worker"]:
                     output_data["cloudflare_worker"] = existing_data["cloudflare_worker"]
+        
                 if "subscription_urls" in existing_data and existing_data["subscription_urls"]:
                     output_data["subscription_urls"] = existing_data["subscription_urls"]
         except json.JSONDecodeError:
@@ -345,15 +389,36 @@ async def main():
             logger.warning(f"Could not read existing file: {e}")
 
     use_proxy = await check_local_proxy()
+    all_links = []
 
-    new_configs = await fetch_public_configs(use_proxy)
-    if new_configs: 
-        output_data["configs"] = new_configs
+
+    user_subs = output_data.get("subscription_urls", [])
+    if user_subs:
+        logger.info(f"Fetching {len(user_subs)} user custom subscriptions...")
+        tasks = [fetch_from_url(url, use_proxy) for url in user_subs]
+        results = await asyncio.gather(*tasks)
+        for content in results:
+            if content:
+                all_links.extend(extract_configs_from_text(content))
+
+
+    public_links = await fetch_public_configs(use_proxy)
+    all_links.extend(public_links)
+    
+    if all_links: 
+    
+        unique_links = list(set(all_links))
+        logger.info(f"Total unique raw links gathered: {len(unique_links)}")
         
-        if not output_data["cloudflare_worker"]:
-            worker = extract_cloudflare_worker(new_configs)
-            if worker:
-                output_data["cloudflare_worker"] = worker
+    
+        alive_links = await filter_alive_configs(unique_links, use_proxy)
+        
+        if alive_links:
+            output_data["configs"] = alive_links
+            if not output_data["cloudflare_worker"]:
+                worker = extract_cloudflare_worker(alive_links)
+                if worker:
+                    output_data["cloudflare_worker"] = worker
 
     if not output_data["warp"]:
         warp_keys = await auto_register_warp(use_proxy)
@@ -366,4 +431,3 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
     sys.exit(0)
-
