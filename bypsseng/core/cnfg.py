@@ -1,6 +1,3 @@
-
-
-
 import os
 import sys
 import time
@@ -17,18 +14,18 @@ import logging
 import re
 from urllib.parse import urlparse, parse_qs, unquote
 
-
 from core.utils import parse_config_link
 
 try:
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
     from cryptography.hazmat.primitives import serialization
 except ImportError:
-    logging.getLogger("ConfigFetcher").error("Error: 'cryptography' is not installed. Please run: pip install cryptography")
+    logging.getLogger("ConfigFetcher").error(
+        "Error: 'cryptography' is not installed. Please run: pip install cryptography"
+    )
     sys.exit(1)
 
 logger = logging.getLogger("ConfigFetcher")
-
 
 FREE_CONFIGS_URLS = [
     "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/mixed",
@@ -40,21 +37,38 @@ FREE_CONFIGS_URLS = [
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
     "https://raw.githubusercontent.com/aiboboxx/v2rayfree/main/v2",
     "https://raw.githubusercontent.com/mfuu/v2ray/master/v2",
+    "https://raw.githubusercontent.com/AzadNetCh/NetV2/main/qsub",
+    "https://raw.githubusercontent.com/MrPooyaX/VpnsFucking/main/sub.txt",
+    "https://raw.githubusercontent.com/MhdiTaheri/V2rayCollector/main/splitted/mixed",
+    "https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/main/All_Configs_Sub.txt",
+    "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/sub.txt",
     "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
     "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/All_Configs_Sub.txt",
-    "https://raw.githubusercontent.com/AzadNetCh/NetV2/main/qsub"
+    "https://raw.githubusercontent.com/Danialsamadi/v2go/main/merged",
 ]
 
 OUTPUT_FILE = "cnfg.json"
 LOCAL_PROXY = "http://127.0.0.1:10809"
 
 HARDCODED_DNS = {
-    "raw.githubusercontent.com": ["185.199.108.133", "185.199.109.133", "185.199.110.133", "185.199.111.133"],
-    "api.cloudflareclient.com": ["162.159.192.1", "162.159.193.1", "188.114.96.1", "188.114.97.1", "104.16.0.1", "104.17.0.1"]
+    "raw.githubusercontent.com": [
+        "185.199.108.133",
+        "185.199.109.133",
+        "185.199.110.133",
+        "185.199.111.133",
+    ],
+    "api.cloudflareclient.com": [
+        "162.159.192.1",
+        "162.159.193.1",
+        "188.114.96.1",
+        "188.114.97.1",
+        "104.16.0.1",
+        "104.17.0.1",
+    ],
 }
 
+
 class ForceIPResolver(aiohttp.DefaultResolver):
-    """Bypasses DNS resolution by forcing a specific IP for SNI spoofing."""
     def __init__(self, target_ip=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.target_ip = target_ip
@@ -62,11 +76,18 @@ class ForceIPResolver(aiohttp.DefaultResolver):
     async def resolve(self, host, port=0, family=0):
         if host in HARDCODED_DNS and self.target_ip:
             logger.debug(f"Direct mode: Forcing IP {self.target_ip} for {host}")
-            return [{
-                "hostname": host, "host": self.target_ip, "port": port,
-                "family": socket.AF_INET, "proto": socket.IPPROTO_TCP, "flags": socket.AI_NUMERICHOST
-            }]
+            return [
+                {
+                    "hostname": host,
+                    "host": self.target_ip,
+                    "port": port,
+                    "family": socket.AF_INET,
+                    "proto": socket.IPPROTO_TCP,
+                    "flags": socket.AI_NUMERICHOST,
+                }
+            ]
         return await super().resolve(host, port, family)
+
 
 def atomic_write_json(filepath, data):
     tmp_path = filepath + ".tmp"
@@ -77,9 +98,12 @@ def atomic_write_json(filepath, data):
     except Exception as e:
         logger.error(f"Atomic write failed for {filepath}: {e}")
 
+
 async def check_local_proxy():
     try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", 10809), timeout=2)
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", 10809), timeout=2
+        )
         writer.close()
         await writer.wait_closed()
         return True
@@ -87,49 +111,69 @@ async def check_local_proxy():
         return False
 
 
-
-
 async def generate_warp_keys():
     private_key = X25519PrivateKey.generate()
     private_bytes = private_key.private_bytes(
-        encoding=serialization.Encoding.Raw, format=serialization.PrivateFormat.Raw, encryption_algorithm=serialization.NoEncryption()
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
     )
-    priv_key_b64 = base64.b64encode(private_bytes).decode('utf-8')
+    priv_key_b64 = base64.b64encode(private_bytes).decode("utf-8")
     public_bytes = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     )
-    pub_key_b64 = base64.b64encode(public_bytes).decode('utf-8')
+    pub_key_b64 = base64.b64encode(public_bytes).decode("utf-8")
     return priv_key_b64, pub_key_b64
+
 
 def calculate_reserved(client_id):
     try:
         if isinstance(client_id, str) and not client_id.isdigit():
             decoded = base64.b64decode(client_id)
-            if len(decoded) == 3: return list(decoded)
+            if len(decoded) == 3:
+                return list(decoded)
         cid = int(client_id)
         return [cid >> 16 & 0xFF, cid >> 8 & 0xFF, cid & 0xFF]
     except Exception:
         return [0, 0, 0]
 
+
 async def auto_register_warp(use_proxy):
     logger.info("Attempting to register new WARP account...")
     priv_key, pub_key = await generate_warp_keys()
     install_id = str(uuid.uuid4())
-    fcm_token = f"{install_id}:APA91b" + "".join(random.choices(string.ascii_letters + string.digits, k=134))
-    
+    fcm_token = f"{install_id}:APA91b" + "".join(
+        random.choices(string.ascii_letters + string.digits, k=134)
+    )
+
     payload = {
-        "key": pub_key, "install_id": install_id, "fcm_token": fcm_token, 
-        "tos": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()), 
-        "model": "PC", "serial_number": install_id[:10], "locale": "en_US",
-        "referrer": "5372edd6-58f6-4f41-b43b-3a4130c2df2a"
+        "key": pub_key,
+        "install_id": install_id,
+        "fcm_token": fcm_token,
+        "tos": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+        "model": "PC",
+        "serial_number": install_id[:10],
+        "locale": "en_US",
+        "referrer": "5372edd6-58f6-4f41-b43b-3a4130c2df2a",
     }
-    headers = {"Content-Type": "application/json; charset=UTF-8", "User-Agent": "okhttp/3.12.1", "CF-Client-Version": "a-6.11-2223"}
+    headers = {
+        "Content-Type": "application/json; charset=UTF-8",
+        "User-Agent": "okhttp/3.12.1",
+        "CF-Client-Version": "a-6.11-2223",
+    }
     ssl_ctx = ssl.create_default_context()
 
     if use_proxy:
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-                async with session.post("https://api.cloudflareclient.com/v0a2223/reg", json=payload, headers=headers, proxy=LOCAL_PROXY) as resp:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as session:
+                async with session.post(
+                    "https://api.cloudflareclient.com/v0a2223/reg",
+                    json=payload,
+                    headers=headers,
+                    proxy=LOCAL_PROXY,
+                ) as resp:
                     return await process_warp_response(resp, priv_key)
         except Exception as e:
             logger.error(f"WARP registration exception via proxy: {e}")
@@ -139,14 +183,22 @@ async def auto_register_warp(use_proxy):
             try:
                 resolver = ForceIPResolver(target_ip=ip)
                 connector = aiohttp.TCPConnector(resolver=resolver, ssl=ssl_ctx)
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), connector=connector) as session:
-                    async with session.post("https://api.cloudflareclient.com/v0a2223/reg", json=payload, headers=headers) as resp:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=10), connector=connector
+                ) as session:
+                    async with session.post(
+                        "https://api.cloudflareclient.com/v0a2223/reg",
+                        json=payload,
+                        headers=headers,
+                    ) as resp:
                         result = await process_warp_response(resp, priv_key)
-                        if result: return result
+                        if result:
+                            return result
             except Exception as e:
                 logger.warning(f"Failed with IP {ip}: {e}")
         logger.error("All Cloudflare IPs failed for WARP registration.")
         return None
+
 
 async def process_warp_response(resp, priv_key):
     if resp.status == 200:
@@ -159,7 +211,7 @@ async def process_warp_response(resp, priv_key):
             "ipv6_address": data["config"]["interface"]["addresses"]["v6"],
             "peer_public_key": data["config"]["peers"][0]["public_key"],
             "endpoint": f"{endpoint_ip}:2408",
-            "reserved": calculate_reserved(client_id)
+            "reserved": calculate_reserved(client_id),
         }
         logger.info("WARP registered successfully!")
         return warp_data
@@ -169,30 +221,91 @@ async def process_warp_response(resp, priv_key):
         return None
 
 
-
-
 def extract_configs_from_text(content):
-    valid_protos = ("vless://", "trojan://", "hysteria2://", "hy2://", "vmess://", "ss://")
-    links = [line.strip() for line in content.split('\n') if line.strip().startswith(valid_protos)]
+    valid_protos = (
+        "vless://",
+        "trojan://",
+        "hysteria2://",
+        "hy2://",
+        "vmess://",
+        "ss://",
+    )
+    links = [
+        line.strip()
+        for line in content.split("\n")
+        if line.strip().startswith(valid_protos)
+    ]
     if not links:
         try:
-            clean_content = content.replace("\n", "").replace("\r", "").replace("\\", "").strip()
+            clean_content = (
+                content.replace("\n", "").replace("\r", "").replace("\\", "").strip()
+            )
             missing_padding = len(clean_content) % 4
-            if missing_padding: clean_content += '=' * (4 - missing_padding)
-            decoded_str = base64.b64decode(clean_content).decode('utf-8')
-            links = [line.strip() for line in decoded_str.split('\n') if line.strip().startswith(valid_protos)]
+            if missing_padding:
+                clean_content += "=" * (4 - missing_padding)
+            decoded_str = base64.b64decode(clean_content).decode("utf-8")
+            links = [
+                line.strip()
+                for line in decoded_str.split("\n")
+                if line.strip().startswith(valid_protos)
+            ]
         except Exception:
             pass
     return list(set(links))
 
-latency_sem = asyncio.Semaphore(50) # Section 15: Concurrency control
+
+def deduplicate_configs(links):
+    seen_keys = set()
+    unique_links = []
+
+    for link in links:
+        creds = parse_config_link(link)
+        if creds["protocol"] == "unsupported":
+            continue
+
+        proto = creds["protocol"]
+        host = creds.get(f"{proto}_server_ip")
+        port = creds.get(f"{proto}_port")
+
+        identifier = ""
+        if proto == "vless":
+            identifier = creds.get("vless_uuid", "")
+        elif proto == "vmess":
+            identifier = creds.get("vmess_uuid", "")
+        elif proto == "trojan":
+            identifier = creds.get("trojan_password", "")
+        elif proto == "ss":
+            identifier = creds.get("ss_password", "")
+        elif proto in ("hysteria2", "hy2"):
+            identifier = creds.get("hysteria_password", "")
+        elif proto == "tuic":
+            identifier = creds.get("tuic_uuid", "")
+        elif proto == "shadowtls":
+            identifier = creds.get("shadowtls_password", "")
+        elif proto in ("naive", "naive+https"):
+            identifier = creds.get("naive_user", "")
+
+        if host and port and identifier:
+            dedup_key = f"{proto}:{host}:{port}:{identifier}"
+            if dedup_key not in seen_keys:
+                seen_keys.add(dedup_key)
+                unique_links.append(link)
+        else:
+            unique_links.append(link)
+
+    return unique_links
+
+
+latency_sem = asyncio.Semaphore(50)
+
 
 async def test_tcp_latency(host, port, timeout=1.5):
-    """Section 23: Measures TCP connection latency."""
     start = time.time()
     try:
         async with latency_sem:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=timeout
+            )
             latency = round((time.time() - start) * 1000, 2)
             writer.close()
             await writer.wait_closed()
@@ -200,60 +313,65 @@ async def test_tcp_latency(host, port, timeout=1.5):
     except:
         return None
 
+
 async def test_tls_handshake(host, port, sni):
-    """Section 21: Tests SNI to detect if server is DPI filtered."""
-    if not sni: return False
+    if not sni:
+        return False
     try:
         ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
         async with latency_sem:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(host=host, port=port, ssl=ssl_ctx, server_hostname=sni), timeout=2.0)
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    host=host, port=port, ssl=ssl_ctx, server_hostname=sni
+                ),
+                timeout=2.0,
+            )
             writer.close()
             await writer.wait_closed()
             return True
     except:
         return False
 
-async def filter_alive_configs(links, use_proxy):
-    """Validates and tests links to ensure only high-quality, unblocked configs are kept."""
-    logger.info(f"Validating and testing {len(links)} unique links...")
-    
-    async def check_link(link):
 
+async def filter_alive_configs(links, use_proxy):
+    logger.info(f"Validating and testing {len(links)} unique links...")
+
+    async def check_link(link):
         creds = parse_config_link(link)
         if creds["protocol"] == "unsupported":
             return (None, 99999)
-            
+
         proto = creds["protocol"]
         host = creds.get(f"{proto}_server_ip")
         port = creds.get(f"{proto}_port")
-        
+
         if not host or not port:
             return (None, 99999)
-            
+
         latency = await test_tcp_latency(host, port)
         if latency is None:
             return (None, 99999)
-            
 
         if proto in ["vless", "trojan", "shadowtls", "hysteria2", "tuic"]:
             sni_key = f"{proto}_sni" if proto != "trojan" else "trojan_domain"
             sni = creds.get(sni_key, "")
             if sni and not await test_tls_handshake(host, port, sni):
-                return (None, 99999) # Filtered by DPI
-        
+                return (None, 99999)
+
         return (link, latency)
 
     tasks = [check_link(link) for link in links]
     results = await asyncio.gather(*tasks)
-    
+
     alive_links = [(r, lat) for r, lat in results if r is not None]
-    alive_links.sort(key=lambda x: x[1]) # Sort by latency
-    top_links = [link for link, lat in alive_links[:50]] # Keep top 50 fastest
-    
+    alive_links.sort(key=lambda x: x[1])
+    top_links = [link for link, lat in alive_links[:50]]
+
     logger.info(f"Alive and fast configs: {len(top_links)}/{len(links)}")
     return top_links
+
 
 def extract_cloudflare_worker(configs):
     workers_found = []
@@ -263,57 +381,78 @@ def extract_cloudflare_worker(configs):
             try:
                 parsed = urlparse(link)
                 params = parse_qs(parsed.query)
-                if params.get("type", [""])[0] == "ws" and params.get("security", [""])[0] == "tls":
-                    worker_host = params.get("host", [""])[0] or params.get("sni", [""])[0]
+                if (
+                    params.get("type", [""])[0] == "ws"
+                    and params.get("security", [""])[0] == "tls"
+                ):
+                    worker_host = (
+                        params.get("host", [""])[0] or params.get("sni", [""])[0]
+                    )
                     worker_id = parsed.username
                     worker_path = unquote(params.get("path", ["/"])[0])
                     if worker_host and worker_id:
-                        workers_found.append({"id": worker_id, "host": worker_host, "path": worker_path})
+                        workers_found.append(
+                            {"id": worker_id, "host": worker_host, "path": worker_path}
+                        )
             except Exception:
                 continue
-                
+
     if workers_found:
         logger.info(f"Found {len(workers_found)} Cloudflare Worker configs.")
         return workers_found[0]
     return None
+
 
 async def fetch_from_url(url, use_proxy):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         ssl_ctx = ssl.create_default_context()
         timeout = aiohttp.ClientTimeout(total=15)
-        
+
         if use_proxy:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers, proxy=LOCAL_PROXY) as resp:
-                    if resp.status == 200: return await resp.text()
+                    if resp.status == 200:
+                        return await resp.text()
         else:
             target_ip = random.choice(HARDCODED_DNS["raw.githubusercontent.com"])
             resolver = ForceIPResolver(target_ip=target_ip)
             connector = aiohttp.TCPConnector(resolver=resolver, ssl=ssl_ctx)
-            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            async with aiohttp.ClientSession(
+                timeout=timeout, connector=connector
+            ) as session:
                 async with session.get(url, headers=headers) as resp:
-                    if resp.status == 200: return await resp.text()
+                    if resp.status == 200:
+                        return await resp.text()
     except Exception as e:
         logger.warning(f"Failed to fetch from {url}: {e}")
     return None
+
 
 async def fetch_public_configs(use_proxy):
     logger.info("Fetching public configs...")
     all_links = []
     tasks = [fetch_from_url(url, use_proxy) for url in FREE_CONFIGS_URLS]
     results = await asyncio.gather(*tasks)
-    
+
     for content in results:
         if content:
             all_links.extend(extract_configs_from_text(content))
-            
-    unique_links = list(set(all_links))
+
+    unique_links = deduplicate_configs(list(set(all_links)))
     alive_links = await filter_alive_configs(unique_links, use_proxy)
     return alive_links
 
+
 async def main():
-    output_data = {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None, "psiphon": None, "dnstt": None}
+    output_data = {
+        "configs": [],
+        "subscription_urls": [],
+        "warp": None,
+        "cloudflare_worker": None,
+        "psiphon": None,
+        "dnstt": None,
+    }
 
     if os.path.exists(OUTPUT_FILE):
         try:
@@ -321,10 +460,20 @@ async def main():
                 existing_data = json.load(f)
                 if "warp" in existing_data and existing_data["warp"]:
                     output_data["warp"] = existing_data["warp"]
-                if "cloudflare_worker" in existing_data and existing_data["cloudflare_worker"]:
-                    output_data["cloudflare_worker"] = existing_data["cloudflare_worker"]
-                if "subscription_urls" in existing_data and existing_data["subscription_urls"]:
-                    output_data["subscription_urls"] = existing_data["subscription_urls"]
+                if (
+                    "cloudflare_worker" in existing_data
+                    and existing_data["cloudflare_worker"]
+                ):
+                    output_data["cloudflare_worker"] = existing_data[
+                        "cloudflare_worker"
+                    ]
+                if (
+                    "subscription_urls" in existing_data
+                    and existing_data["subscription_urls"]
+                ):
+                    output_data["subscription_urls"] = existing_data[
+                        "subscription_urls"
+                    ]
         except Exception as e:
             logger.warning(f"Could not read existing file: {e}")
 
@@ -342,9 +491,10 @@ async def main():
 
     public_links = await fetch_public_configs(use_proxy)
     all_links.extend(public_links)
-    
-    if all_links: 
-        alive_links = await filter_alive_configs(list(set(all_links)), use_proxy)
+
+    if all_links:
+        unique_combined = deduplicate_configs(list(set(all_links)))
+        alive_links = await filter_alive_configs(unique_combined, use_proxy)
         if alive_links:
             output_data["configs"] = alive_links
             if not output_data["cloudflare_worker"]:
@@ -354,11 +504,12 @@ async def main():
 
     if not output_data["warp"]:
         warp_keys = await auto_register_warp(use_proxy)
-        if warp_keys: 
+        if warp_keys:
             output_data["warp"] = warp_keys
 
     atomic_write_json(OUTPUT_FILE, output_data)
     logger.info("Data saved successfully.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

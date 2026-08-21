@@ -1,10 +1,8 @@
-
-
-
 from enum import Enum
 import logging
 
 logger = logging.getLogger("NetAnalyzer")
+
 
 class EngineState(Enum):
     INIT = "INIT"
@@ -19,25 +17,23 @@ class EngineState(Enum):
     DEGRADED = "DEGRADED"
     RESELECTING = "RESELECTING"
 
+
 class StateMachine:
-    """
-    State Machine Specification (HANDOFF Sec 2, 35):
-    Manages lifecycle strictly. Invalid transitions are caught, logged, 
-    and force a recovery to DEGRADED state instead of crashing the application.
-    
-    State Flow:
-    INIT -> BASELINE -> DIAGNOSING -> DIAGNOSIS_READY -> SELECTING -> STARTING 
-    -> VERIFYING -> ACTIVE -> MONITORING -> DEGRADED -> RESELECTING -> DIAGNOSING
-    """
+
     def __init__(self):
         self.state = EngineState.INIT
-        
 
         self.transitions = {
             EngineState.INIT: [EngineState.BASELINE],
             EngineState.BASELINE: [EngineState.DIAGNOSING, EngineState.RESELECTING],
-            EngineState.DIAGNOSING: [EngineState.DIAGNOSIS_READY, EngineState.RESELECTING],
-            EngineState.DIAGNOSIS_READY: [EngineState.SELECTING, EngineState.RESELECTING],
+            EngineState.DIAGNOSING: [
+                EngineState.DIAGNOSIS_READY,
+                EngineState.RESELECTING,
+            ],
+            EngineState.DIAGNOSIS_READY: [
+                EngineState.SELECTING,
+                EngineState.RESELECTING,
+            ],
             EngineState.SELECTING: [EngineState.STARTING, EngineState.RESELECTING],
             EngineState.STARTING: [EngineState.VERIFYING, EngineState.DEGRADED],
             EngineState.VERIFYING: [EngineState.ACTIVE, EngineState.DEGRADED],
@@ -46,23 +42,19 @@ class StateMachine:
             EngineState.DEGRADED: [EngineState.RESELECTING],
             EngineState.RESELECTING: [EngineState.DIAGNOSING],
         }
-        
+
     def transition(self, new_state):
-        """Attempts to transition to a new state. Forces DEGRADED on invalid transition."""
+
         if new_state in self.transitions.get(self.state, []):
 
             logger.debug(f"State transition: {self.state.value} -> {new_state.value}")
             self.state = new_state
             return True
-        
-
-
 
         err_msg = f"Invalid state transition from {self.state.value} to {new_state.value}. Forcing DEGRADED."
         logger.error(err_msg)
-        
 
         if self.state != EngineState.DEGRADED:
             self.state = EngineState.DEGRADED
-            
+
         return False

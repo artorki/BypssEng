@@ -1,6 +1,3 @@
-
-
-
 import os
 import sys
 import json
@@ -17,68 +14,62 @@ from typing import Dict, Any, Optional, List, Tuple
 logger = logging.getLogger("NetAnalyzer")
 
 
-
-
 def find_binary(name: str, core_dir: str) -> Optional[str]:
-    """Finds the binary executable in the core directory or system PATH."""
     core_path = os.path.join(core_dir, name)
-    if platform.system().lower() == 'windows' and not name.endswith('.exe'):
+    if platform.system().lower() == "windows" and not name.endswith(".exe"):
         core_path_exe = core_path + ".exe"
-        if os.path.isfile(core_path_exe): return core_path_exe
-    if os.path.isfile(core_path): return core_path
-        
+        if os.path.isfile(core_path_exe):
+            return core_path_exe
+    if os.path.isfile(core_path):
+        return core_path
+
     pt_dir = os.path.join(core_dir, "pluggable_transports")
     pt_path = os.path.join(pt_dir, name)
-    if platform.system().lower() == 'windows' and not name.endswith('.exe'):
+    if platform.system().lower() == "windows" and not name.endswith(".exe"):
         pt_path_exe = pt_path + ".exe"
-        if os.path.isfile(pt_path_exe): return pt_path_exe
-    if os.path.isfile(pt_path): return pt_path
-        
+        if os.path.isfile(pt_path_exe):
+            return pt_path_exe
+    if os.path.isfile(pt_path):
+        return pt_path
+
     path = shutil.which(name)
     return path if path else None
 
+
 def atomic_write_json(filepath: str, data: Dict[str, Any]) -> None:
-    """Writes JSON to a temporary file and replaces the original to prevent corruption."""
     tmp_path = filepath + ".tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
         os.replace(tmp_path, filepath)
-        try: 
-            os.chmod(filepath, 0o600) # Restrict permissions for security
-        except Exception: 
+        try:
+            os.chmod(filepath, 0o600)
+        except Exception:
             pass
     except Exception as e:
         logger.error(f"Failed to write {filepath}: {e}")
 
+
 def b64_decode(s: str) -> str:
-    """Decodes Base64 URL-safe strings with padding correction."""
-    s = s.replace('-', '+').replace('_', '/')
+    s = s.replace("-", "+").replace("_", "/")
     missing = len(s) % 4
-    if missing: s += '=' * (4 - missing)
-    return base64.b64decode(s).decode('utf-8')
-
-
+    if missing:
+        s += "=" * (4 - missing)
+    return base64.b64decode(s).decode("utf-8")
 
 
 def parse_config_link(link: str) -> Dict[str, Any]:
-    """
-    Dispatches to specific protocol parsers based on scheme.
-    Validates schema before returning (HANDOFF Sec 21, 57).
-    Section 65: Does not log raw links to protect credentials.
-    """
     try:
         if link.startswith("vmess://"):
             return _parse_vmess(link)
         elif link.startswith("ss://"):
             return _parse_ss(link)
-        
 
         parsed = urlparse(link)
         proto = parsed.scheme
         if not proto:
             return {"protocol": "unsupported", "raw_link": link}
-            
+
         if proto == "vless":
             return _parse_vless(parsed, link)
         elif proto == "trojan":
@@ -93,11 +84,13 @@ def parse_config_link(link: str) -> Dict[str, Any]:
             return _parse_shadowtls(parsed, link)
         else:
             return {"protocol": "unsupported", "raw_link": link}
-            
-    except Exception as e:
 
-        logger.error(f"Failed to parse config link. Error: {e}")
+    except Exception as e:
+        logger.debug(
+            f"Failed to parse config link (filtered as unsupported). Error: {e}"
+        )
         return {"protocol": "unsupported", "raw_link": link}
+
 
 def _parse_vmess(link: str) -> Dict[str, Any]:
     try:
@@ -117,14 +110,18 @@ def _parse_vmess(link: str) -> Dict[str, Any]:
             creds["vmess_service_name"] = creds["vmess_path"]
         creds["vmess_tls"] = vmess_data.get("tls", "")
         creds["vmess_alter_id"] = int(vmess_data.get("aid", 0))
-        
 
-        if not creds["vmess_server_ip"] or not creds["vmess_port"] or not creds["vmess_uuid"]:
+        if (
+            not creds["vmess_server_ip"]
+            or not creds["vmess_port"]
+            or not creds["vmess_uuid"]
+        ):
             raise ValueError("Missing VMess core parameters")
         return creds
     except Exception as e:
-        logger.error(f"VMess parse error: {e}")
+        logger.debug(f"VMess parse error (filtered as unsupported): {e}")
         return {"protocol": "unsupported", "raw_link": link}
+
 
 def _parse_ss(link: str) -> Dict[str, Any]:
     try:
@@ -154,13 +151,14 @@ def _parse_ss(link: str) -> Dict[str, Any]:
                 creds["ss_port"] = int(hostport.split(":")[1])
             creds["ss_method"] = method
             creds["ss_password"] = password
-            
+
         if not creds.get("ss_server_ip") or not creds.get("ss_port"):
             raise ValueError("Missing SS core parameters")
         return creds
     except Exception as e:
-        logger.error(f"SS parse error: {e}")
+        logger.debug(f"SS parse error (filtered as unsupported): {e}")
         return {"protocol": "unsupported", "raw_link": link}
+
 
 def _parse_vless(parsed, link: str) -> Dict[str, Any]:
     if not parsed.hostname or not parsed.port or not parsed.username:
@@ -181,6 +179,7 @@ def _parse_vless(parsed, link: str) -> Dict[str, Any]:
     creds["vless_flow"] = params.get("flow", [""])[0]
     return creds
 
+
 def _parse_trojan(parsed, link: str) -> Dict[str, Any]:
     if not parsed.hostname or not parsed.port or not parsed.username:
         raise ValueError("Missing Trojan parameters")
@@ -191,6 +190,7 @@ def _parse_trojan(parsed, link: str) -> Dict[str, Any]:
     creds["trojan_password"] = unquote(parsed.username)
     creds["trojan_domain"] = params.get("sni", [""])[0]
     return creds
+
 
 def _parse_hysteria2(parsed, link: str) -> Dict[str, Any]:
     if not parsed.hostname or not parsed.port or not parsed.username:
@@ -206,6 +206,7 @@ def _parse_hysteria2(parsed, link: str) -> Dict[str, Any]:
     creds["hysteria_obfs_password"] = params.get("obfs-password", [""])[0]
     return creds
 
+
 def _parse_tuic(parsed, link: str) -> Dict[str, Any]:
     if not parsed.hostname or not parsed.port or not parsed.username:
         raise ValueError("Missing TUIC parameters")
@@ -220,8 +221,14 @@ def _parse_tuic(parsed, link: str) -> Dict[str, Any]:
     creds["tuic_insecure"] = params.get("insecure", ["0"])[0] == "1"
     return creds
 
+
 def _parse_naive(parsed, link: str) -> Dict[str, Any]:
-    if not parsed.hostname or not parsed.port or not parsed.username or not parsed.password:
+    if (
+        not parsed.hostname
+        or not parsed.port
+        or not parsed.username
+        or not parsed.password
+    ):
         raise ValueError("Missing Naive parameters")
     params = parse_qs(parsed.query)
     creds = {"protocol": "naive", "raw_link": link}
@@ -231,6 +238,7 @@ def _parse_naive(parsed, link: str) -> Dict[str, Any]:
     creds["naive_password"] = unquote(parsed.password)
     creds["naive_sni"] = params.get("sni", [""])[0]
     return creds
+
 
 def _parse_shadowtls(parsed, link: str) -> Dict[str, Any]:
     if not parsed.hostname or not parsed.port or not parsed.username:
@@ -244,29 +252,47 @@ def _parse_shadowtls(parsed, link: str) -> Dict[str, Any]:
     return creds
 
 
-
-
 def get_proto_prefix(proto: str) -> str:
-    if proto in ("hysteria2", "hy2"): return "hysteria"
-    if proto in ("naive+https", "naive"): return "naive"
+    if proto in ("hysteria2", "hy2"):
+        return "hysteria"
+    if proto in ("naive+https", "naive"):
+        return "naive"
     return proto
 
+
 def random_spider_x() -> str:
-    paths = ["/", "", "/index.html", "/home", "/api/v1/status", "/static/img/logo.png", "/robots.txt", "/search?q=", "/en/", "/blog/"]
+    paths = [
+        "/",
+        "",
+        "/index.html",
+        "/home",
+        "/api/v1/status",
+        "/static/img/logo.png",
+        "/robots.txt",
+        "/search?q=",
+        "/en/",
+        "/blog/",
+    ]
     return random.choice(paths)
+
 
 def get_less_popular_sni() -> str:
     snis = [
-        "www.samsung.com", "www.amd.com", "www.nvidia.com",
-        "addons.mozilla.org", "www.icloud.com", "www.tesla.com",
-        "www.lovelive-anime.jp", "www.cpanel.net"
+        "www.samsung.com",
+        "www.amd.com",
+        "www.nvidia.com",
+        "addons.mozilla.org",
+        "www.icloud.com",
+        "www.tesla.com",
+        "www.lovelive-anime.jp",
+        "www.cpanel.net",
     ]
     return random.choice(snis)
 
-def get_dynamic_tls_settings(dpi_state: str = 'none') -> Dict[str, Any]:
-    """Returns dynamic TLS settings based on DPI severity."""
+
+def get_dynamic_tls_settings(dpi_state: str = "none") -> Dict[str, Any]:
     fingerprints = ["chrome", "firefox", "safari", "edge", "ios", "random"]
-    if dpi_state in ['dpi_aggressive', 'dpi_rst']:
+    if dpi_state in ["dpi_aggressive", "dpi_rst"]:
         lengths = ["10-50", "50-100", "20-80", "100-200"]
         intervals = ["1-3", "3-5", "5-10"]
     else:
@@ -274,5 +300,9 @@ def get_dynamic_tls_settings(dpi_state: str = 'none') -> Dict[str, Any]:
         intervals = ["5-10", "10-15"]
     return {
         "fingerprint": random.choice(fingerprints),
-        "fragment": {"packets": "tlshello", "length": random.choice(lengths), "interval": random.choice(intervals)}
+        "fragment": {
+            "packets": "tlshello",
+            "length": random.choice(lengths),
+            "interval": random.choice(intervals),
+        },
     }

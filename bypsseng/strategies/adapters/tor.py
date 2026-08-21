@@ -1,30 +1,25 @@
-
-
-
 import os
 from strategies.base import Strategy
 import logging
 
 logger = logging.getLogger("NetAnalyzer")
 
+
 class TorStrategy(Strategy):
-    """
-    Section 13: Model B - Direct Adapter for Tor.
-    Uses the standalone tor binary directly.
-    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.binary_name = "tor"
 
     async def prepare(self) -> tuple:
-        """Prepares the torrc configuration file."""
+
         creds = self.creds
         tor_data_dir = os.path.join(self.data_dir, "tor_data").replace("\\", "/")
-        
+
         if creds["protocol"] == "tor_snowflake":
             snowflake_path = self.binary_paths.get("snowflake")
             lyrebird_path = self.binary_paths.get("lyrebird")
-            
+
             if snowflake_path and os.path.isfile(snowflake_path):
 
                 torrc_content = (
@@ -60,12 +55,11 @@ class TorStrategy(Strategy):
                 f"HTTPTunnelPort 127.0.0.1:{self.local_http_port}\n"
             )
             config_name = "torrc_proxy"
-            
+
         config_file = f"{config_name}"
         with open(os.path.join(self.data_dir, config_file), "w") as f:
             f.write(torrc_content)
-            
 
         self._config_file = config_file
-        
+
         return config_file, "tor"

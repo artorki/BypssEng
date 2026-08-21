@@ -1,6 +1,3 @@
-
-
-
 import asyncio
 import logging
 import argparse
@@ -11,7 +8,6 @@ import json
 import platform
 import inspect
 
-
 PACKAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bypsseng")
 if PACKAGE_DIR not in sys.path:
     sys.path.insert(0, PACKAGE_DIR)
@@ -19,7 +15,7 @@ if PACKAGE_DIR not in sys.path:
 from core.logger import log, Colors
 from config.models import CONFIG
 from engine.orchestrator import Orchestrator
-from engine.models import DecisionExplanation
+from bypsseng.domain.models import DecisionExplanation
 from infrastructure.system_network import SystemNetworkManager
 from infrastructure.runtime_session import RuntimeSession
 from runtime.process import pm
@@ -27,11 +23,12 @@ from strategies.registry import get_strategy
 from decision.scorer import score_strategy
 from telemetry.storage import TelemetryDB
 from telemetry.statistics import AdaptiveStatistics
-from core.utils import parse_config_link, atomic_write_json
+from core.utils import parse_config_link, find_binary, atomic_write_json
+from diagnosis.health import scan_clean_cdn_ips
 import aiohttp
 
-
 APP_DIR = PACKAGE_DIR
+BIN_DIR = os.path.join(APP_DIR, "bin")
 DATA_DIR = os.path.join(APP_DIR, "Data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -44,82 +41,135 @@ CORE_DIR = os.path.join(APP_DIR, "core")
 logger = logging.getLogger("NetAnalyzer")
 DIAGNOSE_ONLY = False
 
-
+BINARY_PATHS = {
+    "xray": find_binary("xray", BIN_DIR),
+    "hysteria": find_binary("hysteria", BIN_DIR),
+    "tor": find_binary("tor", BIN_DIR),
+    "snowflake": find_binary("snowflake-client", BIN_DIR),
+    "lyrebird": find_binary("lyrebird", BIN_DIR),
+    "tuic": find_binary("tuic", BIN_DIR),
+    "naive": find_binary("naive", BIN_DIR),
+    "psiphon": find_binary("psiphon-tunnel-core", BIN_DIR),
+    "dnstt-client": find_binary("dnstt-client", BIN_DIR),
+}
 
 
 def load_unified_config():
     if not os.path.exists(UNIFIED_CONFIG_FILE):
-        return {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None}
+        return {
+            "configs": [],
+            "subscription_urls": [],
+            "warp": None,
+            "cloudflare_worker": None,
+        }
     try:
-        with open(UNIFIED_CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    except Exception: return {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None}
+        with open(UNIFIED_CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {
+            "configs": [],
+            "subscription_urls": [],
+            "warp": None,
+            "cloudflare_worker": None,
+        }
 
-def generate_network_report(states, applied_bypass="none", diagnosis=None, selected_method=None):
-    """Section 54: Machine-readable report generation with stable schema."""
-    if not diagnosis: diagnosis = []
-    if not selected_method: selected_method = "unknown"
-    
-    confidence = "low"; severity_score = 30
-    if selected_method == "healthy": confidence = "high"; severity_score = 100
-    elif selected_method == "starting": confidence = "low"; severity_score = 0
-    elif selected_method == "failed": confidence = "low"; severity_score = 10
-    
+
+def generate_network_report(
+    states, applied_bypass="none", diagnosis=None, selected_method=None
+):
+    if not diagnosis:
+        diagnosis = []
+    if not selected_method:
+        selected_method = "unknown"
+
+    confidence = "low"
+    severity_score = 30
+    if selected_method == "healthy":
+        confidence = "high"
+        severity_score = 100
+    elif selected_method == "starting":
+        confidence = "low"
+        severity_score = 0
+    elif selected_method == "failed":
+        confidence = "low"
+        severity_score = 10
+
     report = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "network_states": states, 
-        "applied_bypass": applied_bypass, 
+        "network_states": states,
+        "applied_bypass": applied_bypass,
         "verdict": {
-            "diagnosis": diagnosis, "selected_method": selected_method, 
-            "confidence": confidence, "severity_score": severity_score
-        }
+            "diagnosis": diagnosis,
+            "selected_method": selected_method,
+            "confidence": confidence,
+            "severity_score": severity_score,
+        },
     }
-    try: atomic_write_json(REPORT_FILE, report)
-    except Exception as e: logger.error(f"Report write failed: {e}")
+    try:
+        atomic_write_json(REPORT_FILE, report)
+    except Exception as e:
+        logger.error(f"Report write failed: {e}")
     return report.get("verdict")
 
+
 def is_root_or_admin():
-    """Checks if the script is running with Administrator/root privileges."""
-    if platform.system().lower() == 'windows':
-        try: 
+    if platform.system().lower() == "windows":
+        try:
             import ctypes
+
             return ctypes.windll.shell32.IsUserAnAdmin() != 0
-        except: 
+        except:
             return False
-    return hasattr(os, 'geteuid') and os.geteuid() == 0
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
 
 def load_state():
-    """Helper function for API Server to read network state."""
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r") as f: return json.load(f)
-        except Exception: return {}
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
+
 async def fetch_fresh_configs(wait=True):
-    """Helper function for API Server to trigger config fetching."""
     try:
         sys.path.insert(0, CORE_DIR)
         import cnfg
+
         if inspect.iscoroutinefunction(cnfg.main):
-            if wait: await cnfg.main()
-            else: asyncio.create_task(cnfg.main())
+            if wait:
+                await cnfg.main()
+            else:
+                asyncio.create_task(cnfg.main())
         return True
     except ImportError:
         import subprocess
+
         cmd = [sys.executable, os.path.join(CORE_DIR, "cnfg.py")]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=DATA_DIR)
-        if wait: await proc.communicate()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=DATA_DIR,
+        )
+        if wait:
+            await proc.communicate()
         return True
 
+
 async def check_config_latency(parsed_creds):
-    """Helper function for API Server to test config latency."""
     try:
         host = parsed_creds.get(f"{parsed_creds['protocol']}_server_ip")
         port = parsed_creds.get(f"{parsed_creds['protocol']}_port")
-        if not host or not port: return None
-        
+        if not host or not port:
+            return None
+
         start = time.time()
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=3)
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=3
+        )
         latency = round((time.time() - start) * 1000, 2)
         writer.close()
         await writer.wait_closed()
@@ -128,16 +178,16 @@ async def check_config_latency(parsed_creds):
         return None
 
 
-
-
-async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeSession, net_manager: SystemNetworkManager):
+async def execute_bypass_and_connect(
+    creds, dpi_state, runtime_session: RuntimeSession, net_manager: SystemNetworkManager
+):
     async with pm.strategy_lock:
         old_procs = pm.active_procs[:] if pm.active_procs else []
         old_socks = runtime_session.local_socks_port
         old_http = runtime_session.local_http_port
 
         runtime_session.setup_dynamic_ports()
-        
+
         async def restore_state_on_failure():
             pm.cleanup_child_processes()
             runtime_session.local_socks_port = old_socks
@@ -145,39 +195,78 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
             if not DIAGNOSE_ONLY:
                 await net_manager.set_system_proxy(False)
 
-        strategy = get_strategy(creds, None, dpi_state, runtime_session.local_socks_port, runtime_session.local_http_port, DATA_DIR, {})
-        if not strategy: await restore_state_on_failure(); return False
+        strategy = get_strategy(
+            creds,
+            None,
+            dpi_state,
+            runtime_session.local_socks_port,
+            runtime_session.local_http_port,
+            DATA_DIR,
+            BINARY_PATHS,
+        )
+        if not strategy:
+            await restore_state_on_failure()
+            return False
 
         config_file, binary_name = await strategy.prepare()
-        if not config_file: await restore_state_on_failure(); return False
+        if not config_file:
+            await restore_state_on_failure()
+            return False
 
         try:
             strategy._config_file = config_file
             commands = strategy.processes()
             pm.active_procs = []
             for cmd in commands:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=DATA_DIR,
+                )
                 pm._assign_to_job(proc)
                 pm.active_procs.append(proc)
-            
-            await asyncio.sleep(3)
+
+            wait_time = 3
+            if creds["protocol"] in ["tor_proxy", "tor_snowflake", "psiphon"]:
+                wait_time = 20
+            elif creds["protocol"] == "dnstt":
+                wait_time = 10
+
+            await asyncio.sleep(wait_time)
             proxy = f"http://127.0.0.1:{runtime_session.local_http_port}"
-            
+
             success = False
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-                for url in ["https://cp.cloudflare.com/generate_204", "https://www.youtube.com/generate_204"]:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as session:
+                for url in [
+                    "https://cp.cloudflare.com/generate_204",
+                    "https://www.youtube.com/generate_204",
+                ]:
                     try:
-                        async with session.get(url, proxy=proxy, allow_redirects=False) as resp:
+                        async with session.get(
+                            url, proxy=proxy, allow_redirects=False
+                        ) as resp:
                             if resp.status in [204, 200]:
-                                log(f"Successfully connected via {creds['protocol'].upper()}!", "PASS")
+                                log(
+                                    f"Successfully connected via {creds['protocol'].upper()}!",
+                                    "PASS",
+                                )
                                 if not DIAGNOSE_ONLY:
-                                    if not await net_manager.set_system_proxy(True, runtime_session.local_http_port):
-                                        await restore_state_on_failure(); return False
+                                    if not await net_manager.set_system_proxy(
+                                        True, runtime_session.local_http_port
+                                    ):
+                                        await restore_state_on_failure()
+                                        return False
                                 for p in old_procs:
-                                    if p.returncode is None: p.terminate()
-                                success = True; break
-                    except Exception: continue
-                    
+                                    if p.returncode is None:
+                                        p.terminate()
+                                success = True
+                                break
+                    except Exception:
+                        continue
+
                 if not success:
                     log(f"Proxy failed to connect or bypass filtering.", "FAIL")
                     await restore_state_on_failure()
@@ -188,14 +277,58 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
             await restore_state_on_failure()
             return False
 
-async def bypass_executor_wrapper(states, diagnosis_result, runtime_session, net_manager, db, adaptive_stats):
-    """Section 24: Adaptive Engine Integration. Wires statistics into the scoring loop."""
+
+async def bypass_executor_wrapper(
+    states, diagnosis_result, runtime_session, net_manager, db, adaptive_stats
+):
     log(f"Executing bypass based on diagnosis: {diagnosis_result.condition}", "SOL")
-    
+
     unified_cfg = load_unified_config()
     config_links = unified_cfg.get("configs", [])
     parsed_configs = [parse_config_link(link) for link in config_links]
     valid_configs = [c for c in parsed_configs if c["protocol"] != "unsupported"]
+
+    if unified_cfg.get("warp"):
+        clean_ips = await scan_clean_cdn_ips(
+            cdn_provider="cloudflare",
+            worker_host="engage.cloudflareclient.com",
+            worker_path="/",
+            count=3,
+        )
+        if clean_ips:
+            log(
+                f"Found {len(clean_ips)} clean Cloudflare IPs for WARP. Adding WARP as primary fallback.",
+                "SOL",
+            )
+            valid_configs.insert(
+                0,
+                {
+                    "protocol": "warp",
+                    "warp_data": unified_cfg["warp"],
+                    "custom_endpoint": f"{clean_ips[0]}:2408",
+                },
+            )
+        else:
+            valid_configs.append({"protocol": "warp", "warp_data": unified_cfg["warp"]})
+
+    if unified_cfg.get("cloudflare_worker"):
+        valid_configs.append(
+            {
+                "protocol": "cloudflare_worker",
+                "worker_data": unified_cfg["cloudflare_worker"],
+            }
+        )
+    if BINARY_PATHS.get("psiphon"):
+        valid_configs.append({"protocol": "psiphon"})
+    if BINARY_PATHS.get("dnstt-client") and unified_cfg.get("dnstt"):
+        valid_configs.append(
+            {
+                "protocol": "dnstt",
+                "dnstt_domain": unified_cfg["dnstt"].get("domain"),
+                "dnstt_pubkey": unified_cfg["dnstt"].get("pubkey"),
+            }
+        )
+
     valid_configs.extend([{"protocol": "tor_proxy"}, {"protocol": "tor_snowflake"}])
 
     scored_candidates = []
@@ -203,57 +336,74 @@ async def bypass_executor_wrapper(states, diagnosis_result, runtime_session, net
         score = await score_strategy(c["protocol"], states, db, adaptive_stats)
         scored_candidates.append((c, score))
     scored_candidates.sort(key=lambda x: x[1].score, reverse=True)
-    
+
     alternatives = {}
     selected_strategy = None
     explanation_evidence = []
-    
+
     for creds, score in scored_candidates:
-        if score.score > 0.1 or creds["protocol"] in ["tor_proxy", "tor_snowflake", "psiphon"]:
-            log(f"Attempting strategy: {creds['protocol']} (Score: {score.score:.2f})", "INFO")
-            success = await execute_bypass_and_connect(creds, states.get('dpi'), runtime_session, net_manager)
+        if score.score > 0.1 or creds["protocol"] in [
+            "tor_proxy",
+            "tor_snowflake",
+            "psiphon",
+            "dnstt",
+            "warp",
+        ]:
+            log(
+                f"Attempting strategy: {creds['protocol']} (Score: {score.score:.2f})",
+                "INFO",
+            )
+            success = await execute_bypass_and_connect(
+                creds, states.get("dpi"), runtime_session, net_manager
+            )
             if success:
                 selected_strategy = creds["protocol"]
                 explanation_evidence = score.reasons
-                await db.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, True)
+                await db.record_strategy_outcome(
+                    creds["protocol"], diagnosis_result.condition, True
+                )
                 break
             else:
                 alternatives[creds["protocol"]] = score.score
-                await db.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, False)
-                
+                await db.record_strategy_outcome(
+                    creds["protocol"], diagnosis_result.condition, False
+                )
+
     if selected_strategy:
-        generate_network_report(states, f"connected_via_{selected_strategy}", [diagnosis_result.condition], selected_strategy)
-        return True, DecisionExplanation(selected=selected_strategy, alternatives=alternatives, evidence=explanation_evidence)
-    
+        generate_network_report(
+            states,
+            f"connected_via_{selected_strategy}",
+            [diagnosis_result.condition],
+            selected_strategy,
+        )
+        return True, DecisionExplanation(
+            selected=selected_strategy,
+            alternatives=alternatives,
+            evidence=explanation_evidence,
+        )
+
     generate_network_report(states, "failed", [diagnosis_result.condition], "failed")
     return False, None
 
 
-
-
 async def main():
-    """Composition Root: Wires all dependencies and runs the Orchestrator (Section 4, 87)."""
-    
-
     net_manager = SystemNetworkManager(STATE_FILE)
-    
 
     log("Performing startup recovery policy...", "SOL")
     await net_manager.restore_system_state()
-    
 
     runtime_session = RuntimeSession()
     runtime_session.setup_dynamic_ports()
-    
 
     db = TelemetryDB(DB_PATH)
     await db.init()
     await db.cleanup_old_logs()
     adaptive_stats = AdaptiveStatistics(db)
-    
 
     async def executor_wrapper(states, diagnosis_result):
-        return await bypass_executor_wrapper(states, diagnosis_result, runtime_session, net_manager, db, adaptive_stats)
+        return await bypass_executor_wrapper(
+            states, diagnosis_result, runtime_session, net_manager, db, adaptive_stats
+        )
 
     orchestrator = Orchestrator(
         app_dir=APP_DIR,
@@ -261,28 +411,30 @@ async def main():
         telemetry_db=db,
         runtime_session=runtime_session,
         net_manager=net_manager,
-        report_callback=generate_network_report
+        report_callback=generate_network_report,
     )
     orchestrator.local_http_port = runtime_session.local_http_port
 
-
-    print(f"{Colors.BOLD}Advanced Adaptive Anti-Censorship Engine Started.{Colors.ENDC}\n")
-    
+    print(
+        f"{Colors.BOLD}Advanced Adaptive Anti-Censorship Engine Started.{Colors.ENDC}\n"
+    )
 
     while True:
         try:
             await orchestrator.run()
-            break # Exit if run finishes normally
+            break
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log(f"CRITICAL: Engine crashed unexpectedly: {e}. Restarting in 5 seconds...", "ERROR")
+            log(
+                f"CRITICAL: Engine crashed unexpectedly: {e}. Restarting in 5 seconds...",
+                "ERROR",
+            )
             logger.exception("Watchdog caught exception")
             await asyncio.sleep(5)
-
             from engine.state_machine import EngineState
-            orchestrator.sm.state = EngineState.RESELECTING
 
+            orchestrator.sm.state = EngineState.RESELECTING
 
     await db.close()
     runtime_session.release_reserved_ports()
@@ -290,13 +442,20 @@ async def main():
     if not DIAGNOSE_ONLY:
         await net_manager.set_system_proxy(False)
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--diagnose-only", action="store_true", help="Only run tests, output machine-readable report.json")
-    parser.add_argument("--research", action="store_true", help="Enable extensive logging and telemetry")
+    parser.add_argument(
+        "--diagnose-only",
+        action="store_true",
+        help="Only run tests, output machine-readable report.json",
+    )
+    parser.add_argument(
+        "--research", action="store_true", help="Enable extensive logging and telemetry"
+    )
     args = parser.parse_args()
-    if args.diagnose_only: DIAGNOSE_ONLY = True
+    if args.diagnose_only:
+        DIAGNOSE_ONLY = True
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -306,7 +465,9 @@ if __name__ == "__main__":
         log("Shutting down gracefully...", "INFO")
     finally:
         pending = asyncio.all_tasks(loop=loop)
-        for task in pending: task.cancel()
-        if pending: loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
         log("Shutdown complete.", "INFO")

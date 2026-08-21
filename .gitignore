@@ -1,6 +1,18 @@
-bypsseng/Data/
-bypsseng/bin/
-*.log
-*.db
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Binaries (Users must download them manually)
+# bypsseng/bin/
+
+# Runtime Data (Logs, DBs, generated configs, user subs)
+bypsseng/Data/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# IDE (Optional)
+.vscode/
+.idea/
