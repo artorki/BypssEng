@@ -412,6 +412,7 @@ async def main():
         runtime_session=runtime_session,
         net_manager=net_manager,
         report_callback=generate_network_report,
+        fetch_config_callback=fetch_fresh_configs
     )
     orchestrator.local_http_port = runtime_session.local_http_port
 
