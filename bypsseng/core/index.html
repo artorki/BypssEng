@@ -33,7 +33,11 @@
         .input-group button { width: auto; padding: 8px 15px; white-space: nowrap; }
         .status-text { font-size: 12px; color: var(--muted); margin-top: 5px; }
         .progress-header { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
-        #diagnosis-report { font-size: 13px; line-height: 1.8; }
+        #diagnosis-timeline { max-height: 400px; overflow-y: auto; }
+        .timeline-item { border-right: 3px solid var(--border); padding-right: 15px; margin-bottom: 15px; }
+        .timeline-item.active { border-right-color: var(--blue); }
+        .timeline-header { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: bold; }
+        .timeline-phases { font-size: 13px; line-height: 1.8; }
         .report-paragraph { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }
         .report-paragraph strong { color: var(--blue); }
         .proto-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
@@ -64,15 +68,15 @@
     </div>
 
     <div class="card">
-        <h3>تحلیلگر تخصصی وضعیت شبکه</h3>
+        <h3>تحلیلگر تخصصی وضعیت شبکه (تاریخچه زمان‌دار)</h3>
         <div class="progress-header">
-            <span>پیشرفت تست‌های تشخیصی:</span>
+            <span>پیشرفت تست‌های تشخیصی فعلی:</span>
             <span id="progress-text">۰٪</span>
         </div>
         <div class="severity-bar" style="height: 6px; margin-bottom: 15px;">
             <div id="phase-progress-bar" class="severity-fill" style="width: 0%; background: var(--blue);"></div>
         </div>
-        <div id="diagnosis-report">
+        <div id="diagnosis-timeline">
             <div style="color:var(--muted)">در انتظار شروع تست‌های تشخیصی...</div>
         </div>
     </div>
@@ -120,15 +124,15 @@
         const urlParams = new URLSearchParams(window.location.search);
         const token = urlParams.get('token') || 'invalid';
         const ws = new WebSocket(`ws://${window.location.host}/ws?token=${token}`);
-        let analysisText = [];
         
-        // Section 40: Canonical State Mapping
+        let diagnosisTimeline = [];
+        let currentDiagnosis = null;
+        
         const ConditionMapper = {
             'dns_ok': 'DNS سالم', 'dns_dropped': 'DNS قطع شده', 'dns_hijacked': 'DNS هیفجک شده',
             'dpi_none': 'بدون DPI', 'dpi_rst': 'حمله DPI RST', 'dpi_aggressive': 'DPI تهاجمی', 'dpi_unknown': 'DPI نامشخص',
             'speed_ok': 'سرعت عادی', 'speed_slow': 'سرعت کند', 'throttled_intl': 'کندی بین‌الملل', 'intl_cut': 'قطعی بین‌الملل',
             'udp_ok': 'UDP سالم', 'udp_dropped': 'UDP قطع شده',
-            // Canonical Classes (Section 27)
             'captive_portal': 'پورتال اسیر', 'dns_interference': 'اختلال DNS', 'dpi_filtering': 'فیلترینگ DPI',
             'bandwidth_throttling': 'محدودسازی پهنای باند', 'udp_blocking': 'مسدودی UDP',
             'unknown_anomaly': 'ناهنجاری ناشناخته', 'insufficient_data': 'داده ناکافی', 'healthy': 'شبکه سالم'
@@ -165,12 +169,15 @@
         }
 
         async function fetchConfigs() {
-            // Section 65: Privacy-Safe Config Summary
             try {
                 const res = await fetch('/api/configs', { headers: { 'Authorization': `Bearer ${token}` } });
                 if(res.ok) {
                     const data = await res.json();
                     const summaryDiv = document.getElementById('config-summary');
+                    if (data.total_configs === 0) {
+                        summaryDiv.innerHTML = '<div style="color:var(--yellow)">در حال حاضر هیچ کانفیگی موجود نیست. سیستم در حال تلاش برای دریافت کانفیگ‌های رایگان است...</div>';
+                        return;
+                    }
                     let html = `<div>تعداد کل کانفیگ‌ها: <strong>${data.total_configs}</strong></div>`;
                     html += `<div>وضعیت WARP: <span class="badge ${data.has_warp ? 'ok' : 'fail'}">${data.has_warp ? 'فعال' : 'غیرفعال'}</span></div>`;
                     html += '<div class="proto-list">';
@@ -196,7 +203,6 @@
             const selectedMethod = verdict.selected_method || 'نامشخص';
             const conf = verdict.confidence || 'low';
             
-            // Section 27: Handle Unknown Anomaly
             if (selectedMethod.includes('unknown') || selectedMethod.includes('insufficient')) {
                 verdictBox.innerText = `هشدار: ${ConditionMapper[selectedMethod] || selectedMethod}`;
                 verdictBox.className = 'badge fail';
@@ -247,17 +253,24 @@
 
         function updateDiagnosis(payload) {
             if (payload.phase === 'start') {
-                analysisText = [];
-                document.getElementById('diagnosis-report').innerHTML = '<div style="color:var(--muted)">در حال اجرای تست‌های تشخیصی...</div>';
+                // Finalize previous diagnosis
+                if (currentDiagnosis && currentDiagnosis.phases.length > 0) {
+                    currentDiagnosis.endTime = new Date().toLocaleTimeString('fa-IR');
+                    diagnosisTimeline.unshift(currentDiagnosis);
+                }
+                // Start new diagnosis
+                currentDiagnosis = {
+                    startTime: new Date().toLocaleTimeString('fa-IR'),
+                    endTime: 'اکنون',
+                    phases: []
+                };
                 document.getElementById('phase-progress-bar').style.width = '0%';
                 document.getElementById('progress-text').innerText = '۰٪';
+                renderTimeline();
                 return;
             }
+            
             if (payload.phase === 'final') {
-                const finalReport = analysisText.join(' ');
-                if(finalReport) {
-                    addLog({ts: Date.now()/1000, level: 'SOL', msg: `گزارش نهایی تشخیص شبکه: ${finalReport}`});
-                }
                 return;
             }
 
@@ -279,12 +292,42 @@
                     else if (payload.phase === 5) text = `<strong>فاز ۵ (سرعت):</strong> وضعیت پهنای باند و سرعت اینترنت ${mappedData}.`;
                 }
                 
-                if (text) {
-                    analysisText.push(text);
-                    const reportDiv = document.getElementById('diagnosis-report');
-                    reportDiv.innerHTML = analysisText.map(t => `<div class="report-paragraph">${t}</div>`).join('');
+                if (text && currentDiagnosis) {
+                    currentDiagnosis.phases.push(text);
+                    renderTimeline();
                 }
             }
+        }
+
+        function renderTimeline() {
+            const timelineDiv = document.getElementById('diagnosis-timeline');
+            let html = '';
+            
+            if (currentDiagnosis) {
+                html += `<div class="timeline-item active">
+                    <div class="timeline-header">از ${currentDiagnosis.startTime} تا ${currentDiagnosis.endTime}</div>
+                    <div class="timeline-phases">`;
+                if (currentDiagnosis.phases.length === 0) {
+                    html += '<div style="color:var(--muted)">در حال اجرای تست‌های تشخیصی...</div>';
+                } else {
+                    currentDiagnosis.phases.forEach(p => {
+                        html += `<div class="report-paragraph">${p}</div>`;
+                    });
+                }
+                html += `</div></div>`;
+            }
+            
+            diagnosisTimeline.forEach(d => {
+                html += `<div class="timeline-item">
+                    <div class="timeline-header">از ${d.startTime} تا ${d.endTime}</div>
+                    <div class="timeline-phases">`;
+                d.phases.forEach(p => {
+                    html += `<div class="report-paragraph">${p}</div>`;
+                });
+                html += `</div></div>`;
+            });
+            
+            timelineDiv.innerHTML = html;
         }
 
         function addLog(log) {
@@ -300,6 +343,10 @@
         function renderChart(history) {
             const chart = document.getElementById('history-chart');
             chart.innerHTML = '';
+            if (!history || history.length === 0) {
+                chart.innerHTML = '<div style="width:100%; text-align:center; color:var(--muted); padding-top:50px;">هنوز داده‌ای برای نمایش وجود ندارد.</div>';
+                return;
+            }
             history.forEach(item => {
                 const score = item.data?.verdict?.severity_score || 0;
                 const bar = document.createElement('div');
