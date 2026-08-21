@@ -1,11 +1,17 @@
 import asyncio
 import re
 import platform
+import time
 import logging
 from core.logger import log
 from config.models import CONFIG
+from bypsseng.domain.models import DiagnosisResult
+from bypsseng.domain.conditions import NetworkCondition
 
-async def test_icmp(ip):
+logger = logging.getLogger("NetAnalyzer")
+
+async def test_icmp(ip: str) -> bool:
+    """Tests ICMP connectivity (ping)."""
     system = platform.system().lower()
     cmd = ['ping', '-n', '1', '-w', '2000', ip] if system == 'windows' else ['ping', '-c', '1', '-W', '2', ip]
     try:
@@ -13,12 +19,11 @@ async def test_icmp(ip):
         await asyncio.wait_for(proc.communicate(), timeout=3)
         return proc.returncode == 0
     except Exception as e:
-        import logging
-        logging.getLogger("NetAnalyzer").debug(f"ICMP error: {e}")
+        logger.debug(f"ICMP error: {e}")
         return False
 
-async def get_icmp_latency(ip):
-    import time
+async def get_icmp_latency(ip: str) -> float:
+    """Measures ICMP latency."""
     system = platform.system().lower()
     cmd = ['ping', '-n', '1', '-w', '2000', ip] if system == 'windows' else ['ping', '-c', '1', '-W', '2', ip]
     try:
@@ -31,43 +36,53 @@ async def get_icmp_latency(ip):
                 return float(match.group(1))
         return None
     except Exception as e:
-        import logging
-        logging.getLogger("NetAnalyzer").debug(f"ICMP latency error: {e}")
+        logger.debug(f"ICMP latency error: {e}")
         return None
 
-async def test_tcp_ping(ip, port=443):
+async def test_tcp_ping(ip: str, port: int = 443) -> tuple:
+    """
+    Section 23: Measures TCP connection latency.
+    Returns (success: bool, latency: float or None)
+    """
+    start = time.time()
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=CONFIG.intervals.tcp_timeout)
+        latency = round((time.time() - start) * 1000, 2)
         writer.close()
         await writer.wait_closed()
-        return True
+        return True, latency
     except Exception as e:
-        import logging
-        logging.getLogger("NetAnalyzer").debug(f"TCP ping error to {ip}:{port}: {e}")
-        return False
+        logger.debug(f"TCP ping error to {ip}:{port}: {e}")
+        return False, None
 
-async def test_ip_layer():
+async def test_ip_layer() -> dict:
+    """
+    Returns a dictionary with network states and latency metrics.
+    Section 23: Includes latency data for adaptive learning.
+    """
     log("Phase 1: Checking Network & Routing Layer...", "HEADER")
-    state = {'internal': False, 'external': False, 'icmp': False, 'tcp_ping': False, 'ipv6': 'unknown'}
+    state = {
+        'internal': False, 'external': False, 'icmp': False, 
+        'tcp_ping': False, 'ipv6': NetworkCondition.VPN_UNKNOWN.value, 
+        'tcp_latency': None
+    }
     
-    async def check_tcp(ip, port):
-        try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout=CONFIG.intervals.tcp_timeout)
-            writer.close(); await writer.wait_closed(); return True
-        except Exception: return False
-
     tcp_ext_tasks_443 = [test_tcp_ping(ip, 443) for ip in CONFIG.targets.external_ips]
     tcp_ext_tasks_80 = [test_tcp_ping(ip, 80) for ip in CONFIG.targets.external_ips]
     tcp_ext_results = await asyncio.gather(*(tcp_ext_tasks_443 + tcp_ext_tasks_80))
-    state['tcp_ping'] = any(tcp_ext_results)
+    
+    successes = [res[0] for res in tcp_ext_results]
+    latencies = [res[1] for res in tcp_ext_results if res[1] is not None]
+    state['tcp_ping'] = any(successes)
+    if latencies:
+        state['tcp_latency'] = min(latencies) # Best latency for adaptive scoring
 
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(CONFIG.targets.ipv6_target, 443), timeout=2)
         writer.close(); await writer.wait_closed()
         state['ipv6'] = 'ok'
     except Exception as e:
-        import logging
-        logging.getLogger("NetAnalyzer").debug(f"IPv6 error: {e}")
+        logger.debug(f"IPv6 error: {e}")
         state['ipv6'] = 'dropped'
 
     icmp_ext_tasks = [test_icmp(ip) for ip in CONFIG.targets.external_ips]
@@ -78,13 +93,10 @@ async def test_ip_layer():
     has_icmp_int = any(icmp_int)
     state['icmp'] = has_icmp_ext or has_icmp_int
 
-    ext_tcp_tasks = [check_tcp(ip, 443) for ip in CONFIG.targets.external_ips]
-    ext_tcp_results = await asyncio.gather(*ext_tcp_tasks)
+    state['external'] = state['tcp_ping'] or has_icmp_ext
     
-    state['external'] = state['tcp_ping'] or has_icmp_ext or any(ext_tcp_results)
-    
-    internal_tasks = [check_tcp(ip, 53) for ip in CONFIG.targets.internal_ips]
-    int_tcp_results = await asyncio.gather(*internal_tasks)
-    state['internal'] = has_icmp_int or any(int_tcp_results)
+    int_tcp_tasks = [test_tcp_ping(ip, 53) for ip in CONFIG.targets.internal_ips]
+    int_tcp_results = await asyncio.gather(*int_tcp_tasks)
+    state['internal'] = has_icmp_int or any([res[0] for res in int_tcp_results])
     
     return state

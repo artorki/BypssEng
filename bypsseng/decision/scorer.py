@@ -1,47 +1,61 @@
+
+
+
 import math
-from engine.models import StrategyScore
-from telemetry.metrics import get_strategy_success_rate
+import logging
+from bypsseng.domain.models import StrategyScore
+
+logger = logging.getLogger("NetAnalyzer")
+
+
+
 
 STRATEGY_CAPABILITIES = {
-    "vless": {"udp": False, "tcp": True, "dpi_resistance": 0.5},
-    "trojan": {"udp": False, "tcp": True, "dpi_resistance": 0.2},
-    "shadowtls": {"udp": False, "tcp": True, "dpi_resistance": 0.8},
-    "hysteria2": {"udp": True, "tcp": False, "dpi_resistance": 0.8},
-    "tuic": {"udp": True, "tcp": False, "dpi_resistance": 0.7},
-    "tor_proxy": {"udp": False, "tcp": True, "dpi_resistance": 0.9},
-    "tor_snowflake": {"udp": False, "tcp": True, "dpi_resistance": 1.0},
-    "warp": {"udp": True, "tcp": False, "dpi_resistance": 0.5},
-    "naive": {"udp": False, "tcp": True, "dpi_resistance": 0.8},
-    "cloudflare_worker": {"udp": False, "tcp": True, "dpi_resistance": 0.9},
-    "psiphon": {"udp": False, "tcp": True, "dpi_resistance": 0.9},
-    "dnstt": {"udp": False, "tcp": False, "dpi_resistance": 1.0},
+    "vless": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 0.5}, "reliability": 0.7, "performance": 0.8},
+    "trojan": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 0.2}, "reliability": 0.6, "performance": 0.7},
+    "shadowtls": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 0.8}, "reliability": 0.8, "performance": 0.6},
+    "hysteria2": {"capabilities": {"udp": True, "tcp": False, "dpi_resistance": 0.8}, "reliability": 0.8, "performance": 0.9},
+    "tuic": {"capabilities": {"udp": True, "tcp": False, "dpi_resistance": 0.7}, "reliability": 0.7, "performance": 0.8},
+    "tor_proxy": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 0.9}, "reliability": 0.8, "performance": 0.3},
+    "tor_snowflake": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 1.0}, "reliability": 0.9, "performance": 0.4},
+    "warp": {"capabilities": {"udp": True, "tcp": False, "dpi_resistance": 0.5}, "reliability": 0.9, "performance": 0.8},
+    "naive": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 0.8}, "reliability": 0.7, "performance": 0.7},
+    "cloudflare_worker": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 0.9}, "reliability": 0.9, "performance": 0.8},
+    "psiphon": {"capabilities": {"udp": False, "tcp": True, "dpi_resistance": 0.9}, "reliability": 0.8, "performance": 0.6},
+    "dnstt": {"capabilities": {"udp": False, "tcp": False, "dpi_resistance": 1.0}, "reliability": 0.6, "performance": 0.2}
 }
 
 def calculate_health_score(metrics, weights=None):
     if weights is None:
         weights = {'w1': 0.25, 'w2': 0.15, 'w3': 0.20, 'w4': 0.20, 'w5': 0.20}
-    
     availability = metrics.get('availability', 0)
     latency = metrics.get('latency', 1000)
     norm_latency = max(0.0, 1.0 - (latency / 1000.0))
-    
     stability = metrics.get('stability', 0)
     throughput = metrics.get('throughput', 0)
     norm_throughput = min(1.0, throughput / 10000.0)
-    
     failure_rate = metrics.get('failure_rate', 1)
     reliability = 1 - failure_rate
-    
     return (
-        weights['w1'] * availability +
-        weights['w2'] * norm_latency +
-        weights['w3'] * stability +
-        weights['w4'] * norm_throughput +
+        weights['w1'] * availability + weights['w2'] * norm_latency +
+        weights['w3'] * stability + weights['w4'] * norm_throughput +
         weights['w5'] * reliability
     )
 
-async def score_strategy(strategy_name, states):
-    caps = STRATEGY_CAPABILITIES.get(strategy_name, {"udp": True, "tcp": True, "dpi_resistance": 0.0})
+
+
+
+async def score_strategy(strategy_name, states, telemetry_db=None, adaptive_stats=None):
+    """
+    Evaluates strategy based on:
+    - CurrentNetworkCondition
+    - HistoricalOutcome (via telemetry_db)
+    - Bayesian Posterior & Confidence (via adaptive_stats)
+    - Safety Rails to prevent low-sample overconfidence (Section 62)
+    """
+    strategy_data = STRATEGY_CAPABILITIES.get(strategy_name, {})
+    caps = strategy_data.get("capabilities", {"udp": True, "tcp": True, "dpi_resistance": 0.0})
+    
     score = 0.0
     reasons = []
     
@@ -49,6 +63,7 @@ async def score_strategy(strategy_name, states):
     dpi_state = states.get('dpi', 'dpi_none')
     speed_state = states.get('speed', 'speed_ok')
     
+
     if udp_state == 'udp_dropped' and not caps["tcp"]:
         return StrategyScore(strategy=strategy_name, score=0.0, reasons=["UDP blocked, TCP unsupported"])
         
@@ -61,19 +76,41 @@ async def score_strategy(strategy_name, states):
         score += 0.3
         reasons.append("UDP protocol good for throttled networks")
         
-    success_rate = await get_strategy_success_rate(strategy_name, dpi_state)
+
+    raw_success_rate = 0.0
+    if telemetry_db:
+        raw_success_rate = await telemetry_db.get_strategy_success_rate(strategy_name, dpi_state)
     
+
+
+
+    posterior = raw_success_rate
+    confidence = 0.5 # Default confidence
+    if adaptive_stats:
+        posterior = await adaptive_stats.get_strategy_posterior(strategy_name, dpi_state)
+        confidence = await adaptive_stats.get_confidence(strategy_name, dpi_state)
+    else:
+
+        posterior = (raw_success_rate * 0.8) + (0.5 * 0.2)
+        
     metrics = {
-        'availability': success_rate,
+        'availability': posterior,
         'latency': states.get('latency', 500),
-        'stability': success_rate,
+        'stability': posterior,
         'throughput': states.get('throughput', 0),
-        'failure_rate': 1 - success_rate
+        'failure_rate': 1 - posterior
     }
     health = calculate_health_score(metrics)
-    score += health * 0.4
     
-    if success_rate > 0.5: reasons.append(f"High historical success ({success_rate*100:.0f}%)")
-    elif success_rate > 0: reasons.append(f"Low historical success ({success_rate*100:.0f}%)")
+
+    score += health * (0.4 * confidence)
+    
+
+    if posterior > 0.6: 
+        reasons.append(f"High historical success ({posterior*100:.0f}%) [Conf: {confidence*100:.0f}%]")
+    elif posterior > 0.4: 
+        reasons.append(f"Moderate historical success ({posterior*100:.0f}%) [Conf: {confidence*100:.0f}%]")
+    else:
+        reasons.append("Low historical data/success (Exploration phase)")
 
     return StrategyScore(strategy=strategy_name, score=score, reasons=reasons)

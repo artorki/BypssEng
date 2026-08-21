@@ -1,14 +1,6 @@
-# Data & Runtime Artifacts
 bypsseng/Data/
-bypsseng/bin/cnfg.json
-bypsseng/bin/cnfg.log
+bypsseng/bin/
 *.log
 *.db
-*.exe
-*.dll
-*.dat
-
-# Python
 __pycache__/
-*.py[cod]
-*.pyo
+*.pyc

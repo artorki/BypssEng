@@ -1,86 +1,187 @@
+
+
+
 import aiosqlite
 import json
 import os
 import time
+import math
+import logging
+from typing import List, Dict, Any, Optional
 
-CORE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(CORE_DIR, "Data")
-DB_PATH = os.path.join(DATA_DIR, "telemetry.db")
-_db_conn = None
+logger = logging.getLogger("NetAnalyzer")
 
-async def init_db():
-    global _db_conn
-    os.makedirs(DATA_DIR, exist_ok=True)
-    _db_conn = await aiosqlite.connect(DB_PATH)
-    await _db_conn.execute('''CREATE TABLE IF NOT EXISTS network_events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, data TEXT NOT NULL)''')
-    await _db_conn.execute('''CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, level TEXT, message TEXT)''')
+
+
+
+
+
+class TelemetryDB:
+    """Database Service for Telemetry and Adaptive Learning."""
     
-    await _db_conn.execute('''CREATE TABLE IF NOT EXISTS decision_telemetry (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ts REAL NOT NULL,
-        diagnosis TEXT,
-        confidence REAL,
-        selected_strategy TEXT,
-        score REAL,
-        result TEXT,
-        explanation TEXT
-    )''')
-    
-    await _db_conn.execute('''CREATE TABLE IF NOT EXISTS strategy_history (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, strategy TEXT, condition TEXT, success INTEGER)''')
-    await _db_conn.commit()
+    def __init__(self, db_path: str = "telemetry.db"):
+        self.db_path = db_path
+        self.conn: Optional[aiosqlite.Connection] = None
 
-async def close_db():
-    global _db_conn
-    if _db_conn: await _db_conn.close(); _db_conn = None
+    async def init(self):
+        """Initializes the database and creates tables if they don't exist."""
+        self.conn = await aiosqlite.connect(self.db_path)
+        
 
-async def insert_network_event(data):
-    if _db_conn:
-        await _db_conn.execute("INSERT INTO network_events (ts, data) VALUES (?, ?)", (time.time(), json.dumps(data)))
-        await _db_conn.commit()
+        await self.conn.execute('''CREATE TABLE IF NOT EXISTS network_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, data TEXT NOT NULL
+        )''')
+        
 
-async def insert_log(level, message):
-    if _db_conn:
-        await _db_conn.execute("INSERT INTO logs (ts, level, message) VALUES (?, ?, ?)", (time.time(), level, message))
-        await _db_conn.commit()
+        await self.conn.execute('''CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, level TEXT, message TEXT
+        )''')
+        
 
-async def insert_decision_telemetry(diagnosis, confidence, selected_strategy, score, result, explanation=None):
-    if _db_conn:
-        await _db_conn.execute(
-            "INSERT INTO decision_telemetry (ts, diagnosis, confidence, selected_strategy, score, result, explanation) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-            (time.time(), json.dumps(diagnosis), float(confidence), selected_strategy, float(score), result, json.dumps(explanation) if explanation else "{}")
-        )
-        await _db_conn.commit()
+        await self.conn.execute('''CREATE TABLE IF NOT EXISTS decision_telemetry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts REAL NOT NULL,
+            network_context TEXT,      -- e.g., dpi_aggressive, udp_dropped
+            confidence REAL,
+            selected_strategy TEXT,
+            score REAL,
+            result TEXT,               -- success / failed
+            failure_reason TEXT,       -- Section 23: failure_reason
+            explanation TEXT
+        )''')
+        
 
-async def record_strategy_outcome(strategy, condition, success):
-    if _db_conn:
-        await _db_conn.execute("INSERT INTO strategy_history (ts, strategy, condition, success) VALUES (?, ?, ?, ?)", 
-                               (time.time(), strategy, condition, 1 if success else 0))
-        await _db_conn.commit()
+        await self.conn.execute('''CREATE TABLE IF NOT EXISTS strategy_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            ts REAL NOT NULL,           -- Section 25: Used for Time Decay
+            strategy TEXT, 
+            condition TEXT, 
+            success INTEGER
+        )''')
+        
+        await self.conn.commit()
+        logger.info("Telemetry Database initialized.")
 
-async def get_recent_logs(limit=100):
-    if _db_conn:
-        async with _db_conn.execute("SELECT ts, level, message FROM logs ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
-            rows = await cursor.fetchall()
-            return [{"ts": row[0], "level": row[1], "msg": row[2]} for row in rows]
-    return []
+    async def close(self):
+        """Closes the database connection."""
+        if self.conn:
+            await self.conn.close()
+            self.conn = None
 
-async def get_history(limit=50):
-    if _db_conn:
-        async with _db_conn.execute("SELECT ts, data FROM network_events ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
-            rows = await cursor.fetchall()
-            return [{"ts": row[0], "data": json.loads(row[1])} for row in rows]
-    return []
+    async def insert_network_event(self, data: Dict[str, Any]):
+        """Inserts a network event record."""
+        if self.conn:
+            await self.conn.execute("INSERT INTO network_events (ts, data) VALUES (?, ?)", (time.time(), json.dumps(data)))
+            await self.conn.commit()
 
-async def get_decision_history(limit=50):
-    if _db_conn:
-        async with _db_conn.execute("SELECT ts, diagnosis, confidence, selected_strategy, score, result, explanation FROM decision_telemetry ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
-            rows = await cursor.fetchall()
-            return [{"ts": row[0], "diagnosis": json.loads(row[1]), "confidence": row[2], "selected_strategy": row[3], "score": row[4], "result": row[5], "explanation": json.loads(row[6]) if row[6] else {}} for row in rows]
-    return []
+    async def insert_log(self, level: str, message: str):
+        """Inserts a log record. Section 65: No raw credentials are logged."""
+        if self.conn:
+            await self.conn.execute("INSERT INTO logs (ts, level, message) VALUES (?, ?, ?)", (time.time(), level, message))
+            await self.conn.commit()
 
-async def cleanup_old_logs():
-    if _db_conn:
-        cutoff_time = time.time() - (7 * 24 * 60 * 60)
-        await _db_conn.execute("DELETE FROM logs WHERE ts < ?", (cutoff_time,))
-        await _db_conn.execute("DELETE FROM network_events WHERE ts < ?", (cutoff_time,))
-        await _db_conn.commit()
+    async def insert_decision_telemetry(self, diagnosis: str, confidence: float, selected_strategy: str, score: float, result: str, explanation: Optional[Dict] = None):
+        """Inserts decision telemetry for adaptive learning."""
+        if self.conn:
+            await self.conn.execute(
+                "INSERT INTO decision_telemetry (ts, network_context, confidence, selected_strategy, score, result, failure_reason, explanation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                (time.time(), json.dumps(diagnosis), float(confidence), selected_strategy, float(score), result, 
+                 explanation.get("reasons", ["Unknown"])[0] if explanation else "Unknown", 
+                 json.dumps(explanation) if explanation else "{}")
+            )
+            await self.conn.commit()
+
+    async def record_strategy_outcome(self, strategy: str, condition: str, success: bool):
+        """Records the raw outcome for adaptive learning (Section 24)."""
+        if self.conn:
+            await self.conn.execute("INSERT INTO strategy_history (ts, strategy, condition, success) VALUES (?, ?, ?, ?)", 
+                                   (time.time(), strategy, condition, 1 if success else 0))
+            await self.conn.commit()
+
+
+
+
+    async def get_strategy_success_rate(self, strategy_name: str, condition: str) -> float:
+        """
+        Calculates historical success rate using exponential time decay.
+        Recent attempts have much higher weight than old attempts.
+        """
+        if not self.conn: 
+            return 0.0
+        
+        try:
+            async with self.conn.execute(
+                "SELECT ts, success FROM strategy_history WHERE strategy = ? AND condition = ? ORDER BY ts DESC LIMIT 100", 
+                (strategy_name, condition)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                
+                if not rows: 
+                    return 0.0
+                
+                total_weight = 0.0
+                weighted_success = 0.0
+                now = time.time()
+                
+                for row in rows:
+                    ts = row[0]
+                    success = row[1]
+                    age_days = (now - ts) / (24 * 3600)
+                    
+
+                    if age_days < 1:
+                        weight = 1.0
+                    elif age_days < 7:
+                        weight = 0.85
+                    elif age_days < 30:
+                        weight = 0.50
+                    elif age_days < 90:
+                        weight = 0.15
+                    else:
+                        weight = 0.05  # Very old data has minimal impact
+                        
+                    total_weight += weight
+                    if success == 1:
+                        weighted_success += weight
+                        
+            return weighted_success / total_weight if total_weight > 0 else 0.0
+            
+        except Exception as e:
+            logger.error(f"Error calculating strategy success rate: {e}")
+            return 0.0
+
+    async def get_recent_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Fetches recent logs from the database."""
+        if self.conn:
+            async with self.conn.execute("SELECT ts, level, message FROM logs ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [{"ts": row[0], "level": row[1], "msg": row[2]} for row in rows]
+        return []
+
+    async def get_history(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Fetches recent network events."""
+        if self.conn:
+            async with self.conn.execute("SELECT ts, data FROM network_events ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [{"ts": row[0], "data": json.loads(row[1])} for row in rows]
+        return []
+
+    async def get_decision_history(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Fetches recent decision telemetry records."""
+        if self.conn:
+            async with self.conn.execute("SELECT ts, network_context, confidence, selected_strategy, score, result, failure_reason, explanation FROM decision_telemetry ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [{"ts": row[0], "network_context": json.loads(row[1]), "confidence": row[2], "selected_strategy": row[3], "score": row[4], "result": row[5], "failure_reason": row[6], "explanation": json.loads(row[7]) if row[7] else {}} for row in rows]
+        return []
+
+    async def cleanup_old_logs(self):
+        """Retention policy: Delete logs older than 7 days."""
+        if self.conn:
+            cutoff_time = time.time() - (7 * 24 * 60 * 60)
+            await self.conn.execute("DELETE FROM logs WHERE ts < ?", (cutoff_time,))
+            await self.conn.execute("DELETE FROM network_events WHERE ts < ?", (cutoff_time,))
+            await self.conn.commit()
+
+
+
+db = TelemetryDB()

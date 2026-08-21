@@ -1,10 +1,54 @@
 {
-    "binaries": {
-        "xray": {"url": "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip", "sha256": ""},
-        "hysteria": {"url": "https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64", "sha256": ""}
+  "version": "3.0.0",
+  "last_updated": "2023-11-15T10:00:00Z",
+  "assets": [
+    {
+      "name": "geoip",
+      "filename": "geoip.dat",
+      "source_url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
+      "sha256": "e4d2e1f7a3b9c8d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8",
+      "target_dir": "Data",
+      "version": "latest"
     },
-    "geofiles": {
-        "geoip.dat": {"url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat", "sha256": ""},
-        "geosite.dat": {"url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat", "sha256": ""}
+    {
+      "name": "geosite",
+      "filename": "geosite.dat",
+      "source_url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+      "sha256": "f1e2d3c4b5a69788776655443322110099887766554433221100998877665544",
+      "target_dir": "Data",
+      "version": "latest"
+    },
+    {
+      "name": "xray",
+      "filename": "xray.exe",
+      "source_url": "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip",
+      "sha256": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+      "target_dir": "bin",
+      "version": "latest"
+    },
+    {
+      "name": "tor",
+      "filename": "tor.exe",
+      "source_url": "https://www.torproject.org/dist/torbrowser/13.0.1/tor-win64-0.4.8.7.zip",
+      "sha256": "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
+      "target_dir": "bin",
+      "version": "0.4.8.7"
+    },
+    {
+      "name": "snowflake-client",
+      "filename": "snowflake-client.exe",
+      "source_url": "https://github.com/plos-clan/snowflake/releases/latest/download/snowflake-windows-amd64.zip",
+      "sha256": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+      "target_dir": "bin",
+      "version": "latest"
+    },
+    {
+      "name": "wintun",
+      "filename": "wintun.dll",
+      "source_url": "https://www.wintun.net/builds/wintun-0.14.1.zip",
+      "sha256": "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8",
+      "target_dir": "bin",
+      "version": "0.14.1"
     }
+  ]
 }

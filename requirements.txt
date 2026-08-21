@@ -1,1 +1,0 @@
-pip install aiohttp aiodns pydantic cryptography pywin32 psutil pydivert pyyaml

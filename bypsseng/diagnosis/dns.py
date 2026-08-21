@@ -1,35 +1,38 @@
+
+
+
 import asyncio
 import socket
 import random
 import string
 import ipaddress
 import re
+import time
 import logging
 from core.logger import log
-from core.network import get_resolver
 from config.models import CONFIG
-from engine.models import DiagnosisResult
+from bypsseng.domain.models import DiagnosisResult
+from bypsseng.domain.conditions import NetworkCondition
+
+logger = logging.getLogger("NetAnalyzer")
 
 def extract_dns_ips(text):
     ips = []
     for line in text.splitlines():
         if "DNS Servers" in line or "Statically Configured DNS" in line or "Dynamically Configured DNS" in line:
             for token in re.findall(r'[^\s,;]+', line):
-                try:
-                    ipaddress.ip_address(token)
-                    ips.append(token)
-                except ValueError:
-                    pass
+                try: ipaddress.ip_address(token); ips.append(token)
+                except ValueError: pass
     if not ips:
         for token in re.findall(r'[^\s,;]+', text):
-            try:
-                ipaddress.ip_address(token)
-                ips.append(token)
-            except ValueError:
-                pass
+            try: ipaddress.ip_address(token); ips.append(token)
+            except ValueError: pass
     return ips
 
 async def send_dns_query(ip, domain):
+    """
+    Sends a raw UDP DNS query and measures latency (Section 23).
+    """
     loop = asyncio.get_running_loop()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setblocking(False)
@@ -37,22 +40,26 @@ async def send_dns_query(ip, domain):
     packet = txid.to_bytes(2, 'big') + (0x0100).to_bytes(2, 'big') + (1).to_bytes(2, 'big') + (0).to_bytes(6, 'big')
     qname = b''.join([len(part).to_bytes(1, 'big') + part.encode() for part in domain.split('.')]) + b'\x00'
     packet += qname + (1).to_bytes(2, 'big') + (1).to_bytes(2, 'big')
+    
+    start_time = time.time()
     try:
         await loop.sock_sendto(sock, packet, (ip, 53))
         data, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 1024), timeout=CONFIG.intervals.dns_timeout)
+        latency = round((time.time() - start_time) * 1000, 2)
         if len(data) < 12: return None
         flags = int.from_bytes(data[2:4], 'big')
         if not (flags & 0x8000): return None
         rcode = flags & 0xF
         ancount = int.from_bytes(data[6:8], 'big')
         resp_txid = int.from_bytes(data[:2], 'big')
-        return {'rcode': rcode, 'ancount': ancount, 'txid': resp_txid, 'expected_txid': txid}
+        return {'rcode': rcode, 'ancount': ancount, 'txid': resp_txid, 'expected_txid': txid, 'latency': latency}
     except asyncio.TimeoutError:
         return None
     except Exception as e:
-        logging.getLogger("NetAnalyzer").debug(f"DNS query error: {e}")
+        logger.debug(f"DNS query error: {e}")
         return None
-    finally: sock.close()
+    finally: 
+        sock.close()
 
 async def scan_fastest_dns():
     log("Scanning for fastest and cleanest DNS servers...", "SOL")
@@ -70,7 +77,6 @@ async def scan_fastest_dns():
         latency = round((time.time() - start) * 1000, 2)
         return (ip, latency)
         
-    import time
     results = await asyncio.gather(*[test_dns(ip) for ip in candidates], return_exceptions=True)
     valid = [r for r in results if r and not isinstance(r, Exception)]
     valid.sort(key=lambda x: x[1])
@@ -114,7 +120,7 @@ async def test_doh_resolution():
         except asyncio.TimeoutError:
             results.append('dropped')
         except Exception as e:
-            logging.getLogger("NetAnalyzer").debug(f"DoH error: {e}")
+            logger.debug(f"DoH error: {e}")
             results.append('unknown')
 
     if not results: return 'unknown'
@@ -128,22 +134,22 @@ async def resolve_via_doh(domain):
     for doh in doh_servers:
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-                async with session.get(
-                    f"{doh}?name={domain}&type=A",
-                    headers={"accept": "application/dns-json"}
-                ) as resp:
+                async with session.get(f"{doh}?name={domain}&type=A", headers={"accept": "application/dns-json"}) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         for answer in data.get("Answer", []):
                             if answer.get("type") == 1:
                                 return answer["data"]
         except Exception as e:
-            logging.getLogger("NetAnalyzer").debug(f"DoH resolve error on {doh} for {domain}: {e}")
+            logger.debug(f"DoH resolve error on {doh} for {domain}: {e}")
     return None
 
 async def test_dns_layer():
-    import logging
-    logger = logging.getLogger("NetAnalyzer")
+    """
+    Diagnoses DNS layer.
+    Section 23: Includes latency in evidence.
+    Section 27: Returns 'dns_unknown' for conflicting observations.
+    """
     log("Phase 2: Checking DNS Layer (Hijack Detection via Local vs DoH)...", "HEADER")
     
     loop = asyncio.get_running_loop()
@@ -160,6 +166,8 @@ async def test_dns_layer():
     dns_ip = random.choice(CONFIG.targets.external_ips)
     
     res = await send_dns_query(dns_ip, 'example.com')
+    udp_latency = res.get('latency') if res else None
+    
     if res is None:
         udp_status = 'dropped'
     elif res.get('txid') != res.get('expected_txid'):
@@ -180,6 +188,9 @@ async def test_dns_layer():
     except Exception as e:
         logger.error(f"Unexpected DNS resolution error: {e}")
 
+
+    evidence = [f"udp_latency={udp_latency}ms" if udp_latency else "udp_latency=timeout", f"doh_res={doh_res}"]
+
     if local_res_ips:
         public_found = False
         for fam, _, _, _, sockaddr in local_res_ips:
@@ -188,16 +199,50 @@ async def test_dns_layer():
                 continue
             public_found = True
         if public_found:
-            return DiagnosisResult(condition="dns_hijacked", confidence=0.95, evidence=["public_ip_returned_for_random_domain"], severity="high")
+            return DiagnosisResult(
+                condition=NetworkCondition.DNS_HIJACKED.value, 
+                confidence=0.95, 
+                evidence=evidence + ["public_ip_returned_for_random_domain"], 
+                severity="high"
+            )
 
     if not system_dns_ok:
         if udp_status == 'ok' or doh_res == 'ok':
             log("  -> System DNS broken but direct DNS works. Needs fix.", "WARN")
-            return DiagnosisResult(condition="dns_system_broken", confidence=0.80, evidence=["system_dns_failed", "alternate_dns_ok"], severity="medium")
+            return DiagnosisResult(
+                condition=NetworkCondition.DNS_SYSTEM_BROKEN.value, 
+                confidence=0.80, 
+                evidence=evidence + ["system_dns_failed", "alternate_dns_ok"], 
+                severity="medium"
+            )
 
     if udp_status == 'dropped' and doh_res == 'ok': 
-        return DiagnosisResult(condition="udp_dns_blocked", confidence=0.85, evidence=["udp_dns_dropped", "doh_reachable"], severity="medium")
+        return DiagnosisResult(
+            condition=NetworkCondition.UDP_DNS_BLOCKED.value, 
+            confidence=0.85, 
+            evidence=evidence + ["udp_dns_dropped", "doh_reachable"], 
+            severity="medium"
+        )
     if udp_status == 'dropped' and doh_res == 'dropped': 
-        return DiagnosisResult(condition="dns_dropped", confidence=0.90, evidence=["udp_dropped", "doh_dropped"], severity="high")
+        return DiagnosisResult(
+            condition=NetworkCondition.DNS_DROPPED.value, 
+            confidence=0.90, 
+            evidence=evidence + ["udp_dropped", "doh_dropped"], 
+            severity="high"
+        )
     
-    return DiagnosisResult(condition="dns_ok", confidence=1.0, evidence=[], severity="none")
+
+    if udp_status == 'unknown' or doh_res == 'unknown':
+        return DiagnosisResult(
+            condition=NetworkCondition.DNS_UNKNOWN.value, 
+            confidence=0.5, 
+            evidence=evidence + ["conflicting_observations"], 
+            severity="low"
+        )
+    
+    return DiagnosisResult(
+        condition=NetworkCondition.DNS_OK.value, 
+        confidence=1.0, 
+        evidence=evidence, 
+        severity="none"
+    )

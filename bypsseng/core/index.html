@@ -36,6 +36,8 @@
         #diagnosis-report { font-size: 13px; line-height: 1.8; }
         .report-paragraph { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--border); }
         .report-paragraph strong { color: var(--blue); }
+        .proto-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+        a.export-link { color: var(--blue); text-decoration: none; font-size: 12px; margin-top: 10px; display: inline-block; }
     </style>
 </head>
 <body>
@@ -77,6 +79,12 @@
 
     <div class="grid">
         <div class="card">
+            <h3>خلاصه کانفیگ‌ها (حریم خصوصی ایمن)</h3>
+            <div id="config-summary" style="font-size: 14px; line-height: 1.6;">
+                <div style="color:var(--muted)">در حال دریافت خلاصه...</div>
+            </div>
+        </div>
+        <div class="card">
             <h3>نمودار وضعیت شبکه (۵۰ مورد اخیر)</h3>
             <div class="chart-container" id="history-chart"></div>
             <div class="status-text" style="text-align: center; margin-top: 10px;">محور عمودی: امتیاز سلامت شبکه (۰ تا ۱۰۰)</div>
@@ -104,21 +112,33 @@
 
     <div class="card">
         <h3>لاگ‌های زنده سیستم و گزارش‌ها</h3>
-        <div id="logs"></div>
+        <a href="/api/diagnostics/export" class="export-link" target="_blank">خروجی گزارش‌های ماشین‌خوان (Diagnostics Export)</a>
+        <div id="logs" style="margin-top: 10px;"></div>
     </div>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const token = urlParams.get('token') || 'invalid';
-        
         const ws = new WebSocket(`ws://${window.location.host}/ws?token=${token}`);
         let analysisText = [];
         
+        // Section 40: Canonical State Mapping
+        const ConditionMapper = {
+            'dns_ok': 'DNS سالم', 'dns_dropped': 'DNS قطع شده', 'dns_hijacked': 'DNS هیفجک شده',
+            'dpi_none': 'بدون DPI', 'dpi_rst': 'حمله DPI RST', 'dpi_aggressive': 'DPI تهاجمی', 'dpi_unknown': 'DPI نامشخص',
+            'speed_ok': 'سرعت عادی', 'speed_slow': 'سرعت کند', 'throttled_intl': 'کندی بین‌الملل', 'intl_cut': 'قطعی بین‌الملل',
+            'udp_ok': 'UDP سالم', 'udp_dropped': 'UDP قطع شده',
+            // Canonical Classes (Section 27)
+            'captive_portal': 'پورتال اسیر', 'dns_interference': 'اختلال DNS', 'dpi_filtering': 'فیلترینگ DPI',
+            'bandwidth_throttling': 'محدودسازی پهنای باند', 'udp_blocking': 'مسدودی UDP',
+            'unknown_anomaly': 'ناهنجاری ناشناخته', 'insufficient_data': 'داده ناکافی', 'healthy': 'شبکه سالم'
+        };
+
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.type === 'log') {
                 addLog(data.payload);
-                updateEngineAction(data.payload); // آپدیت بصری وضعیت موتور
+                updateEngineAction(data.payload);
             }
             else if (data.type === 'network_update') updateStatus(data.payload);
             else if (data.type === 'diagnosis_progress') updateDiagnosis(data.payload);
@@ -144,6 +164,25 @@
             } catch(e) {}
         }
 
+        async function fetchConfigs() {
+            // Section 65: Privacy-Safe Config Summary
+            try {
+                const res = await fetch('/api/configs', { headers: { 'Authorization': `Bearer ${token}` } });
+                if(res.ok) {
+                    const data = await res.json();
+                    const summaryDiv = document.getElementById('config-summary');
+                    let html = `<div>تعداد کل کانفیگ‌ها: <strong>${data.total_configs}</strong></div>`;
+                    html += `<div>وضعیت WARP: <span class="badge ${data.has_warp ? 'ok' : 'fail'}">${data.has_warp ? 'فعال' : 'غیرفعال'}</span></div>`;
+                    html += '<div class="proto-list">';
+                    for(const proto in data.protocols) {
+                        html += `<div class="badge ok">${proto}: ${data.protocols[proto]}</div>`;
+                    }
+                    html += '</div>';
+                    summaryDiv.innerHTML = html;
+                }
+            } catch(e) {}
+        }
+
         function updateStatus(report) {
             const verdict = report.verdict || {};
             const score = verdict.severity_score || 0;
@@ -153,13 +192,27 @@
             fill.style.width = `${score}%`;
             fill.style.background = score > 70 ? 'var(--green)' : score > 40 ? 'var(--yellow)' : 'var(--red)';
 
+            const verdictBox = document.getElementById('verdict-box');
+            const selectedMethod = verdict.selected_method || 'نامشخص';
+            const conf = verdict.confidence || 'low';
+            
+            // Section 27: Handle Unknown Anomaly
+            if (selectedMethod.includes('unknown') || selectedMethod.includes('insufficient')) {
+                verdictBox.innerText = `هشدار: ${ConditionMapper[selectedMethod] || selectedMethod}`;
+                verdictBox.className = 'badge fail';
+            } else {
+                verdictBox.innerText = `${ConditionMapper[selectedMethod] || selectedMethod} (${conf})`;
+                verdictBox.className = `badge ${conf === 'high' ? 'ok' : conf === 'medium' ? 'warn' : 'fail'}`;
+            }
+
             const statesDiv = document.getElementById('states');
             statesDiv.innerHTML = '';
-            const states = report.states || {};
+            const states = report.network_states || report.states || {};
             for(const key in states) {
                 const val = typeof states[key] === 'object' ? JSON.stringify(states[key]) : states[key];
-                const isOk = val === 'ok' || val === true || val === 'none';
-                statesDiv.innerHTML += `<div class="badge ${isOk ? 'ok' : 'fail'}">${key}: ${val}</div>`;
+                const isOk = val === 'ok' || val === true || val === 'none' || val === 'healthy';
+                const displayVal = ConditionMapper[val] || val;
+                statesDiv.innerHTML += `<div class="badge ${isOk ? 'ok' : 'fail'}">${key}: ${displayVal}</div>`;
             }
         }
 
@@ -219,19 +272,11 @@
                     const ipv6 = payload.data.ipv6 === 'ok' ? 'سالم' : 'قطع یا غیرفعال';
                     text = `<strong>فاز ۱ (مسیریابی):</strong> ارتباط داخلی سالم است. دسترسی به شبکه خارجی ${ext}. وضعیت آدرس‌دهی IPv6: ${ipv6}.`;
                 } else if (typeof payload.data === 'string') {
-                    if (payload.phase === 2) {
-                        const dnsStatus = payload.data === 'dns_ok' ? 'بدون اختلال و کاملا سالم' : `دچار اختلال است (${payload.data})`;
-                        text = `<strong>فاز ۲ (DNS):</strong> سیستم نام دامنه ${dnsStatus}.`;
-                    } else if (payload.phase === 3) {
-                        const udpStatus = payload.data === 'udp_ok' ? 'بدون مشکل و برقرار' : `دچار مشکل است (${payload.data})`;
-                        text = `<strong>فاز ۳ (UDP):</strong> وضعیت ترافیک پروتکل UDP ${udpStatus}.`;
-                    } else if (payload.phase === 4) {
-                        const dpiStatus = payload.data === 'dpi_none' ? 'بدون فیلترینگ رفتاری شناسایی شد' : `شناسایی شد: ${payload.data}`;
-                        text = `<strong>فاز ۴ (DPI):</strong> بازرسی عمیق بسته‌ها و فیلترینگ SNI ${dpiStatus}.`;
-                    } else if (payload.phase === 5) {
-                        const speedStatus = payload.data === 'speed_ok' ? 'عادی و سالم' : `کند یا محدود شده است (${payload.data})`;
-                        text = `<strong>فاز ۵ (سرعت):</strong> وضعیت پهنای باند و سرعت اینترنت ${speedStatus}.`;
-                    }
+                    const mappedData = ConditionMapper[payload.data] || payload.data;
+                    if (payload.phase === 2) text = `<strong>فاز ۲ (DNS):</strong> وضعیت سیستم نام دامنه ${mappedData}.`;
+                    else if (payload.phase === 3) text = `<strong>فاز ۳ (UDP):</strong> وضعیت ترافیک پروتکل UDP ${mappedData}.`;
+                    else if (payload.phase === 4) text = `<strong>فاز ۴ (DPI):</strong> بازرسی عمیق بسته‌ها و فیلترینگ SNI ${mappedData}.`;
+                    else if (payload.phase === 5) text = `<strong>فاز ۵ (سرعت):</strong> وضعیت پهنای باند و سرعت اینترنت ${mappedData}.`;
                 }
                 
                 if (text) {
@@ -318,7 +363,9 @@
 
         fetchStatus();
         fetchHistory();
+        fetchConfigs();
         setInterval(fetchStatus, 5000);
+        setInterval(fetchConfigs, 15000);
     </script>
 </body>
 </html>

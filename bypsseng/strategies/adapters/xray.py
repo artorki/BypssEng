@@ -1,18 +1,31 @@
+
+
+
 import os
 from strategies.base import Strategy
 from core.utils import atomic_write_json, get_dynamic_tls_settings, random_spider_x, get_less_popular_sni
 from core.logger import log
 from diagnosis.health import scan_clean_cdn_ips
+import logging
+
+logger = logging.getLogger("NetAnalyzer")
 
 class XrayStrategy(Strategy):
+    """
+    Section 1: Multi-protocol support (VLESS, VMess, Trojan, SS, ShadowTLS).
+    Section 2: Core Clustering (Traffic Shifting without restart).
+    Section 3: Shadow Routing (Balancer + Observatory).
+    Section 7: Split Tunneling (Bank domains -> direct).
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.binary_name = "xray"
 
-    async def prepare(self):
+    async def prepare(self) -> tuple:
         creds = self.creds
-        log("Action: Generating optimized Xray bypass config (Multi-protocol, Proxy Chaining & Secure Split Tunneling)...", "SOL")
+        log("Action: Generating optimized Xray bypass config...", "SOL")
         
+
         routing_rules = {
             "domainStrategy": "AsIs", "strictRoute": False,
             "rules": [
@@ -45,10 +58,22 @@ class XrayStrategy(Strategy):
             ob["streamSettings"]["sockopt"]["tcpNoDelay"] = True
             return ob
 
+
+
+
         def make_vless_reality_outbound(c, tag="proxy"):
             sni = c.get("vless_sni") or get_less_popular_sni()
             flow = c.get("vless_flow") or "xtls-rprx-vision"
             return apply_fragmentation({"tag": tag, "protocol": "vless", "settings": {"vnext": [{"address": c["vless_server_ip"], "port": c["vless_port"], "users": [{"id": c["vless_uuid"], "encryption": "none", "flow": flow}]}]}, "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"serverName": sni, "fingerprint": dynamic_tls["fingerprint"], "publicKey": c["vless_public_key"], "shortId": c["vless_short_id"], "spiderX": random_spider_x()}}})
+
+        def make_vless_ws_outbound(c, tag="proxy"):
+            host = c.get("vless_host") or c.get("vless_sni", "")
+            ob = {"tag": tag, "protocol": "vless", "mux": mux_settings, "settings": {"vnext": [{"address": c["vless_server_ip"], "port": c["vless_port"], "users": [{"id": c["vless_uuid"], "encryption": "none"}]}]}, "streamSettings": {"network": "ws", "security": c.get("vless_security", "none"), "wsSettings": {"path": c["vless_path"], "headers": {"Host": host}}}}
+            return apply_fragmentation(ob) if c.get("vless_security") == "tls" else apply_tcp_nodelay(ob)
+
+        def make_vless_grpc_outbound(c, tag="proxy"):
+            ob = {"tag": tag, "protocol": "vless", "mux": mux_settings, "settings": {"vnext": [{"address": c["vless_server_ip"], "port": c["vless_port"], "users": [{"id": c["vless_uuid"], "encryption": "none"}]}]}, "streamSettings": {"network": "grpc", "security": c.get("vless_security", "none"), "grpcSettings": {"serviceName": c.get("vless_service_name", "")}}}
+            return apply_fragmentation(ob) if c.get("vless_security") == "tls" else apply_tcp_nodelay(ob)
 
         def make_trojan_outbound(c, tag="proxy"):
             return apply_fragmentation({"tag": tag, "protocol": "trojan", "mux": mux_settings, "settings": {"servers": [{"address": c["trojan_server_ip"], "port": c["trojan_port"], "password": c["trojan_password"]}]}, "streamSettings": {"network": "tcp", "security": "tls", "tlsSettings": {"serverName": c.get("trojan_domain", ""), "fingerprint": dynamic_tls["fingerprint"], "minVersion": "1.2"}}})
@@ -74,13 +99,8 @@ class XrayStrategy(Strategy):
         def make_outbound_for(c, tag="proxy"):
             if c["protocol"] == "vless":
                 if c.get("vless_security") == "reality": return make_vless_reality_outbound(c, tag)
-                elif c.get("vless_type") == "ws": 
-                    host = c.get("vless_host") or c.get("vless_sni", "")
-                    ob = {"tag": tag, "protocol": "vless", "mux": mux_settings, "settings": {"vnext": [{"address": c["vless_server_ip"], "port": c["vless_port"], "users": [{"id": c["vless_uuid"], "encryption": "none"}]}]}, "streamSettings": {"network": "ws", "security": c.get("vless_security", "none"), "wsSettings": {"path": c["vless_path"], "headers": {"Host": host}}}}
-                    return apply_fragmentation(ob) if c.get("vless_security") == "tls" else apply_tcp_nodelay(ob)
-                elif c.get("vless_type") == "grpc":
-                    ob = {"tag": tag, "protocol": "vless", "mux": mux_settings, "settings": {"vnext": [{"address": c["vless_server_ip"], "port": c["vless_port"], "users": [{"id": c["vless_uuid"], "encryption": "none"}]}]}, "streamSettings": {"network": "grpc", "security": c.get("vless_security", "none"), "grpcSettings": {"serviceName": c.get("vless_service_name", "")}}}
-                    return apply_fragmentation(ob) if c.get("vless_security") == "tls" else apply_tcp_nodelay(ob)
+                elif c.get("vless_type") == "ws": return make_vless_ws_outbound(c, tag)
+                elif c.get("vless_type") == "grpc": return make_vless_grpc_outbound(c, tag)
                 elif c.get("vless_type") == "tcp":
                     ob = {"tag": tag, "protocol": "vless", "mux": mux_settings, "settings": {"vnext": [{"address": c["vless_server_ip"], "port": c["vless_port"], "users": [{"id": c["vless_uuid"], "encryption": "none"}]}]}, "streamSettings": {"network": "tcp"}}
                     if c.get("vless_security") == "tls":
@@ -90,6 +110,9 @@ class XrayStrategy(Strategy):
             elif c["protocol"] == "shadowtls": return make_shadowtls_outbound(c, tag)
             elif c["protocol"] == "vmess": return make_vmess_outbound(c, tag)
             elif c["protocol"] == "ss": return make_ss_outbound(c, tag)
+
+
+
 
         if creds["protocol"] == "warp_over_reality":
             warp_data = creds.get("warp_data"); reality_config = creds.get("reality_config")
@@ -112,7 +135,8 @@ class XrayStrategy(Strategy):
             }
             config = {"log": {"loglevel": "warning"}, "dns": common_dns, "inbounds": common_inbounds, "outbounds": [warp_outbound, reality_outbound, {"tag": "dns-out", "protocol": "dns"}, {"tag": "direct", "protocol": "freedom"}], "routing": routing_rules}
             atomic_write_json(os.path.join(self.data_dir, "auto_bypass_config_warp_reality.json"), config)
-            return "auto_bypass_config_warp_reality.json", "xray"
+            self._config_file = "auto_bypass_config_warp_reality.json"
+            return self._config_file, "xray"
 
         if creds["protocol"] == "warp":
             warp_data = creds.get("warp_data")
@@ -126,7 +150,11 @@ class XrayStrategy(Strategy):
                 ], "routing": routing_rules
             }
             atomic_write_json(os.path.join(self.data_dir, "auto_bypass_config_warp.json"), config)
-            return "auto_bypass_config_warp.json", "xray"
+            self._config_file = "auto_bypass_config_warp.json"
+            return self._config_file, "xray"
+
+
+
 
         if creds["protocol"] == "cloudflare_worker":
             worker_data = creds.get("worker_data")
@@ -145,10 +173,14 @@ class XrayStrategy(Strategy):
             config["outbounds"][0] = apply_fragmentation(config["outbounds"][0])
             config["outbounds"].append({"tag": "fragment-out", "protocol": "freedom", "settings": {"fragment": dynamic_tls["fragment"]}, "streamSettings": {"sockopt": {"tcpNoDelay": True}}})
             atomic_write_json(os.path.join(self.data_dir, "auto_bypass_config_cf.json"), config)
-            return "auto_bypass_config_cf.json", "xray"
+            self._config_file = "auto_bypass_config_cf.json"
+            return self._config_file, "xray"
 
         use_balancer = self.all_configs and len(self.all_configs) > 1
         config = {"log": {"loglevel": "warning"}, "dns": common_dns, "inbounds": common_inbounds, "outbounds": [], "routing": routing_rules}
+
+
+
 
         if self.dpi_state in ['dpi_aggressive', 'dpi_rst', 'drop'] and self.all_configs:
             shadowtls_cfg = next((c for c in self.all_configs if c["protocol"] == "shadowtls"), None)
@@ -165,7 +197,8 @@ class XrayStrategy(Strategy):
                         config["outbounds"].append({"tag": "fragment-out", "protocol": "freedom", "settings": {"fragment": dynamic_tls["fragment"]}, "streamSettings": {"sockopt": {"tcpNoDelay": True}}})
                         config["outbounds"].extend([{"tag": "dns-out", "protocol": "dns"}, {"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}])
                         atomic_write_json(os.path.join(self.data_dir, "auto_bypass_config_xray.json"), config)
-                        return "auto_bypass_config_xray.json", "xray"
+                        self._config_file = "auto_bypass_config_xray.json"
+                        return self._config_file, "xray"
 
             reality_cfg = next((c for c in self.all_configs if c["protocol"] == "vless" and c.get("vless_security") == "reality"), None)
             if reality_cfg and creds["protocol"] not in ("vless", "reality"):
@@ -181,7 +214,11 @@ class XrayStrategy(Strategy):
                         config["outbounds"].append({"tag": "fragment-out", "protocol": "freedom", "settings": {"fragment": dynamic_tls["fragment"]}, "streamSettings": {"sockopt": {"tcpNoDelay": True}}})
                         config["outbounds"].extend([{"tag": "dns-out", "protocol": "dns"}, {"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}])
                         atomic_write_json(os.path.join(self.data_dir, "auto_bypass_config_xray.json"), config)
-                        return "auto_bypass_config_xray.json", "xray"
+                        self._config_file = "auto_bypass_config_xray.json"
+                        return self._config_file, "xray"
+
+
+
 
         if use_balancer:
             balancer_tags = []
@@ -203,4 +240,5 @@ class XrayStrategy(Strategy):
         config["outbounds"].append({"tag": "fragment-out", "protocol": "freedom", "settings": {"fragment": dynamic_tls["fragment"]}, "streamSettings": {"sockopt": {"tcpNoDelay": True}}})
         config["outbounds"].extend([{"tag": "dns-out", "protocol": "dns"}, {"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}])
         atomic_write_json(os.path.join(self.data_dir, "auto_bypass_config_xray.json"), config)
-        return "auto_bypass_config_xray.json", "xray"
+        self._config_file = "auto_bypass_config_xray.json"
+        return self._config_file, "xray"

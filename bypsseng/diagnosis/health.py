@@ -1,3 +1,6 @@
+
+
+
 import asyncio
 import time
 import random
@@ -5,71 +8,87 @@ import ssl
 import aiohttp
 import logging
 from core.logger import log
-from core.network import get_resolver
 from config.models import CONFIG
+from bypsseng.domain.models import DiagnosisResult
+from bypsseng.domain.conditions import NetworkCondition
+
+logger = logging.getLogger("NetAnalyzer")
 
 async def check_direct_health():
+    """
+    Section 23 & 40: Returns detailed health status of each endpoint.
+    Helps prevent false-positives in selective filtering (e.g., YouTube blocked, Google open).
+    """
     log("Running strict direct health check (HTTPS & Anti-Blockpage)...", "INFO")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"}
+    
+    resolver = __import__('core.network', fromlist=['get_resolver']).get_resolver(nameservers=["1.1.1.1", "8.8.8.8", "9.9.9.9"])
+    connector = aiohttp.TCPConnector(force_close=True, enable_cleanup_closed=True, resolver=resolver)
+    results = {}
+    
     try:
-        resolver = get_resolver(nameservers=["1.1.1.1", "8.8.8.8", "9.9.9.9"])
-        connector = aiohttp.TCPConnector(force_close=True, enable_cleanup_closed=True, resolver=resolver)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10), headers=headers, trust_env=False, connector=connector) as session:
-            checks_passed = 0
-            checks_total = 0
+            
 
-            checks_total += 1
             try:
+                start = time.time()
                 async with session.get("https://www.google.com/generate_204", allow_redirects=False) as resp:
-                    body = await resp.read()
-                    location = resp.headers.get("Location", "")
-                    if resp.status in (200, 204) and len(body) == 0:
-                        checks_passed += 1
-                    elif resp.status in (301, 302) and ("consent.google.com" in location or "www.google.com" in location):
-                        checks_passed += 1
-                    elif "10.10.34.34" in location or resp.status in (403, 451):
-                        log("  -> Google generate_204: BLOCKED", "WARN")
+                    latency = round((time.time() - start) * 1000, 2)
+                    if resp.status in (200, 204):
+                        results['google'] = {'status': 'ok', 'latency': latency}
+                    elif resp.status in (403, 451):
+                        results['google'] = {'status': 'blocked', 'latency': latency, 'code': resp.status}
                     else:
-                        log(f"  -> Google generate_204: Unexpected status {resp.status}", "WARN")
+                        results['google'] = {'status': 'unknown', 'latency': latency, 'code': resp.status}
             except Exception as e:
-                log(f"  -> Google generate_204: Failed ({type(e).__name__})", "WARN")
+                results['google'] = {'status': 'error', 'latency': None, 'msg': str(e)}
 
-            checks_total += 1
+
             try:
+                start = time.time()
                 async with session.get("https://www.youtube.com/generate_204", allow_redirects=False) as resp:
-                    body = await resp.read()
-                    location = resp.headers.get("Location", "")
-                    if resp.status in (200, 204) and len(body) == 0:
-                        checks_passed += 1
-                    elif resp.status in (301, 302) and ("consent.google.com" in location or "www.google.com" in location):
-                        checks_passed += 1
-                    elif "10.10.34.34" in location or resp.status in (403, 451):
-                        log("  -> YouTube generate_204: BLOCKED", "WARN")
+                    latency = round((time.time() - start) * 1000, 2)
+                    if resp.status in (200, 204):
+                        results['youtube'] = {'status': 'ok', 'latency': latency}
+                    elif resp.status in (403, 451):
+                        results['youtube'] = {'status': 'blocked', 'latency': latency, 'code': resp.status}
                     else:
-                        log(f"  -> YouTube generate_204: Unexpected status {resp.status}", "WARN")
+                        results['youtube'] = {'status': 'unknown', 'latency': latency, 'code': resp.status}
             except Exception as e:
-                log(f"  -> YouTube generate_204: Failed ({type(e).__name__})", "WARN")
+                results['youtube'] = {'status': 'error', 'latency': None, 'msg': str(e)}
 
-            checks_total += 1
+
             try:
+                start = time.time()
                 async with session.get("https://1.1.1.1/cdn-cgi/trace") as resp:
+                    latency = round((time.time() - start) * 1000, 2)
                     if resp.status == 200:
                         text = await resp.text()
                         if "ip=" in text:
-                            checks_passed += 1
+                            results['cloudflare'] = {'status': 'ok', 'latency': latency}
+                        else:
+                            results['cloudflare'] = {'status': 'unknown', 'latency': latency}
+                    else:
+                        results['cloudflare'] = {'status': 'blocked', 'latency': latency, 'code': resp.status}
             except Exception as e:
-                log(f"  -> Cloudflare trace: Failed ({type(e).__name__})", "WARN")
+                results['cloudflare'] = {'status': 'error', 'latency': None, 'msg': str(e)}
 
-            if checks_passed >= 2:
-                log(f"  -> Direct health check: PASSED ({checks_passed}/{checks_total})", "PASS")
-                return True
-            else:
-                log(f"  -> Direct health check: FAILED ({checks_passed}/{checks_total})", "WARN")
-                return False
+
+        ok_count = sum(1 for r in results.values() if r['status'] == 'ok')
+        is_healthy = ok_count >= 2  # At least 2 out of 3 must be OK
+        
+        if is_healthy:
+            log(f"  -> Direct health check: PASSED ({ok_count}/3)", "PASS")
+        else:
+            log(f"  -> Direct health check: FAILED ({ok_count}/3)", "WARN")
+            for site, res in results.items():
+                if res['status'] != 'ok':
+                    logger.debug(f"  -> {site} failed: {res}")
+                
+        return is_healthy, results
     except Exception as e:
-        import logging
-        logging.getLogger("NetAnalyzer").error(f"Direct health check session error: {e}")
-    return False
+        logger.error(f"Direct health check critical error: {e}")
+        return False, {"error": str(e)}
 
 async def check_captive_portal():
     try:
@@ -78,12 +97,11 @@ async def check_captive_portal():
                 text = await resp.text()
                 return "success" not in text
     except Exception as e:
-        import logging
-        logging.getLogger("NetAnalyzer").debug(f"Captive portal check error: {e}")
+        logger.debug(f"Captive portal check error: {e}")
         return False
 
 async def check_geolocation():
-    resolver = get_resolver(nameservers=["1.1.1.1", "8.8.8.8"])
+    resolver = __import__('core.network', fromlist=['get_resolver']).get_resolver(nameservers=["1.1.1.1", "8.8.8.8"])
     try:
         timeout = aiohttp.ClientTimeout(total=8)
         connector = aiohttp.TCPConnector(resolver=resolver)
@@ -94,8 +112,7 @@ async def check_geolocation():
                     data = await resp.json()
                     country = data.get('country', 'Unknown')
             except Exception as e:
-                import logging
-                logging.getLogger("NetAnalyzer").debug(f"ipinfo.io failed: {e}")
+                logger.debug(f"ipinfo.io failed: {e}")
 
             if country == 'Unknown':
                 try:
@@ -103,7 +120,7 @@ async def check_geolocation():
                         data = await resp.json()
                         country = data.get('country', 'Unknown')
                 except Exception as e:
-                    logging.getLogger("NetAnalyzer").debug(f"api.country.is failed: {e}")
+                    logger.debug(f"api.country.is failed: {e}")
 
             if country == 'IR':
                 log(f"Geolocation: {country}. Inside Iran network.", "WARN")

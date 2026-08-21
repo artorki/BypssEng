@@ -1,24 +1,24 @@
-import socket
-from core.logger import log
 
-_port_sockets = []
+
+
+"""
+DEPRECATED (HANDOFF Sec 18):
+This file is now a thin wrapper. All port allocation logic has been moved to
+bypsseng.infrastructure.runtime_session.RuntimeSession to encapsulate state
+and prevent global mutable variable issues.
+
+This file is kept temporarily to prevent ImportError during the transition phase.
+"""
+
+from bypsseng.infrastructure.runtime_session import RuntimeSession
+
+
+runtime_session = RuntimeSession()
 
 def setup_dynamic_ports():
-    release_reserved_ports()
-    def reserve_port():
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(('127.0.0.1', 0))
-        s.listen(1)
-        _port_sockets.append(s)
-        return s.getsockname()[1]
-    
-    socks = reserve_port()
-    http = reserve_port()
-    log(f"Allocated and reserved dynamic ports -> SOCKS: {socks}, HTTP: {http}", "INFO")
-    return socks, http
+    """Wrapper for RuntimeSession.setup_dynamic_ports()"""
+    return runtime_session.setup_dynamic_ports()
 
 def release_reserved_ports():
-    for s in _port_sockets:
-        try: s.close()
-        except Exception: pass
-    _port_sockets.clear()
+    """Wrapper for RuntimeSession.release_reserved_ports()"""
+    return runtime_session.release_reserved_ports()

@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bypsseng"
+version = "3.0.0" # Absolute Final Architecture
+description = "Adaptive Network Resilience / Anti-Censorship Engine"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "artorki", email = "artorki@example.com"}
+]
+keywords = ["anti-censorship", "network", "proxy", "xray", "bypass", "dpi", "adaptive"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+# Section 64: Dependency Pinning (Security & Stability)
+dependencies = [
+    "aiohttp>=3.8.0",
+    "aiodns>=3.1.0",
+    "aiosqlite>=0.17.0",
+    "cryptography>=41.0.0",
+    "pydantic>=2.0.0",
+    "psutil>=5.9.0",
+    "pyyaml>=6.0",
+    "pywin32>=305; sys_platform == 'win32'",
+    "pydivert>=0.0.1; sys_platform == 'win32'"
+]
+
+[project.optional-dependencies]
+# Section 36: Test & Dev Dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.10.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0"
+]
+
+# Section 73: Productionization - Entry Points (Scripts)
+[project.scripts]
+bypsseng-dashboard = "run_dashboard:main"
+bypsseng-cli = "BypssEng:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bypsseng*"]
+exclude = ["tests*", "data*", "bin*"]
+
+# Section 36: Pytest Configuration
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+# Code Formatting Configuration
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W"]
+ignore = ["E501"]
