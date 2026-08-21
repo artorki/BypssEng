@@ -144,6 +144,7 @@ async def main():
         net_manager=net_manager,
         report_callback=BypssEng.generate_network_report,
         progress_callback=broadcast_progress,
+        fetch_config_callback=BypssEng.fetch_fresh_configs,
     )
     orchestrator.local_http_port = runtime_session.local_http_port
 
