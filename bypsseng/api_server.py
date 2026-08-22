@@ -5,6 +5,7 @@ import os
 import logging
 import secrets
 import asyncio
+import sys
 
 
 import telemetry.storage as telemetry
