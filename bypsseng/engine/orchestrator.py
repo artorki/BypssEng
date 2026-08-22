@@ -1,12 +1,9 @@
-# bypsseng/engine/orchestrator.py - Absolute Final Version (Post-Phase 11)
-# Incorporates all architectural changes from HANDOFF Sec 4, 11, 16, 34, 35, 45, 54, 55, 87
-
 import asyncio
 import random
 import logging
 from engine.state_machine import StateMachine, EngineState
 from decision.policies import setup_decision_rules
-from bypsseng.domain.models import DiagnosisResult, DecisionExplanation
+from bypsseng.domain.models import DiagnosisResult, DecisionExplanation, DecisionContext
 from core.logger import log
 from config.models import CONFIG
 
@@ -35,16 +32,13 @@ class Orchestrator:
         self.rule_engine = setup_decision_rules()
         self.report_callback = report_callback
         self.progress_callback = progress_callback
-        self.fetch_config_callback = fetch_config_callback  # Added for auto-fetching configs
+        self.fetch_config_callback = fetch_config_callback
         self.states = {}
-        self.diagnose_only = diagnose_only # Section 54
+        self.diagnose_only = diagnose_only
         
-        # Determine local HTTP port from RuntimeSession if available
         self.local_http_port = runtime_session.local_http_port if runtime_session else 10809
 
     async def run(self):
-        """Main state machine loop with robust recovery (Section 35)."""
-        # Send initial starting state to clear dashboard
         if self.report_callback:
             self.report_callback({}, "starting", [], "starting")
             
@@ -55,22 +49,14 @@ class Orchestrator:
                 
                 if current_state in [EngineState.BASELINE, EngineState.RESELECTING]:
                     await self.diagnose()
-                    
                 elif current_state == EngineState.DIAGNOSIS_READY:
                     await self.select_and_connect()
-                    
                 elif current_state == EngineState.STARTING:
                     await asyncio.sleep(1) 
-                    
                 elif current_state == EngineState.VERIFYING:
                     await self.verify()
-                    
                 elif current_state == EngineState.ACTIVE:
                     self.sm.transition(EngineState.MONITORING)
-                    
-                # -----------------------------------------------------------------
-                # Section 34: Fixed Monitoring Loop
-                # -----------------------------------------------------------------
                 elif current_state == EngineState.MONITORING:
                     if await pm.test_current_proxy_health(self.local_http_port):
                         log("Network stable in monitoring cycle. Sleeping...", "INFO")
@@ -78,12 +64,10 @@ class Orchestrator:
                     else:
                         log("Health check failed during monitoring. Entering DEGRADED state.", "WARN")
                         self.sm.transition(EngineState.DEGRADED)
-                        
                 elif current_state == EngineState.DEGRADED:
                     log("Connection degraded. Triggering re-diagnosis...", "WARN")
                     self.sm.transition(EngineState.RESELECTING)
                     await asyncio.sleep(5)
-                    
                 else:
                     log(f"Unknown state {current_state}. Resetting to RESELECTING.", "WARN")
                     self.sm.transition(EngineState.RESELECTING)
@@ -91,16 +75,12 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # -----------------------------------------------------------------
-                # Section 35: Safe Recovery without RuntimeError
-                # -----------------------------------------------------------------
                 logger.error(f"Orchestrator error: {e}", exc_info=True)
                 log(f"Orchestrator error: {e}. Forcing DEGRADED state for recovery.", "ERROR")
                 self.sm.state = EngineState.DEGRADED
                 await asyncio.sleep(5)
 
     async def diagnose(self):
-        """Runs the 5-phase diagnosis pipeline."""
         log("==================================================", "HEADER")
         self.sm.transition(EngineState.DIAGNOSING)
         
@@ -119,7 +99,6 @@ class Orchestrator:
             self.sm.transition(EngineState.RESELECTING)
             return
 
-        # Bug Fix: Unpack the tuple returned by check_direct_health
         is_healthy, health_results = await check_direct_health()
         
         if is_healthy:
@@ -129,7 +108,6 @@ class Orchestrator:
             if self.report_callback:
                 self.report_callback(self.states, "healthy", ["direct_access_ok"], "healthy")
                 
-            # Section 20: Fetch configs in background if healthy
             if self.fetch_config_callback:
                 log("Network is healthy. Fetching fresh configs in background...", "INFO")
                 asyncio.create_task(self.fetch_config_callback(wait=False))
@@ -139,17 +117,14 @@ class Orchestrator:
             self.sm.transition(EngineState.RESELECTING)
             return
 
-        # Phase 1
         if self.progress_callback: await self.progress_callback({"phase": 1, "name": "Network & Routing", "status": "running"})
         ip_s = await test_ip_layer()
         if self.progress_callback: await self.progress_callback({"phase": 1, "status": "done", "data": ip_s})
         
-        # Phase 2
         if self.progress_callback: await self.progress_callback({"phase": 2, "name": "DNS Layer", "status": "running"})
         dns_res = await test_dns_layer()
         if self.progress_callback: await self.progress_callback({"phase": 2, "status": "done", "data": dns_res.condition})
         
-        # Phase 4 (Kernel DPI fallback to behavioral)
         if self.progress_callback: await self.progress_callback({"phase": 4, "name": "DPI Inspection", "status": "running"})
         try:
             from diagnosis.dpi_kernel import test_kernel_dpi
@@ -159,12 +134,10 @@ class Orchestrator:
             dpi_res = await test_dpi_layer()
         if self.progress_callback: await self.progress_callback({"phase": 4, "status": "done", "data": dpi_res.condition})
         
-        # Phase 5
         if self.progress_callback: await self.progress_callback({"phase": 5, "name": "Bandwidth", "status": "running"})
         speed_res = await test_throttling()
         if self.progress_callback: await self.progress_callback({"phase": 5, "status": "done", "data": speed_res.condition})
         
-        # Phase 3
         if self.progress_callback: await self.progress_callback({"phase": 3, "name": "UDP Status", "status": "running"})
         udp_res = await test_udp_status()
         if self.progress_callback: await self.progress_callback({"phase": 3, "status": "done", "data": udp_res.condition})
@@ -180,13 +153,38 @@ class Orchestrator:
         self.sm.transition(EngineState.DIAGNOSIS_READY)
 
     async def select_and_connect(self):
-        """Evaluates rules and executes bypass strategy."""
+        """Evaluates rules and executes bypass strategy using Multi-observation Context."""
         self.sm.transition(EngineState.SELECTING)
         diagnoses = self.rule_engine.evaluate(self.states)
-        primary_diagnosis = max(diagnoses, key=lambda d: d.confidence)
         
-        # Section 50: Decision Explainability
-        log(f"Decision Engine Result: {primary_diagnosis.condition} (Confidence: {primary_diagnosis.confidence})", "SOL")
+        if not diagnoses:
+            log("No diagnoses generated. Entering DEGRADED state.", "WARN")
+            self.sm.transition(EngineState.DEGRADED)
+            return
+
+        combined_conditions = []
+        combined_evidence = []
+        max_confidence = 0.0
+        max_severity = "low"
+        
+        severity_rank = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+        for d in diagnoses:
+            combined_conditions.append(d.condition)
+            combined_evidence.extend(d.evidence)
+            if d.confidence > max_confidence:
+                max_confidence = d.confidence
+            if severity_rank.get(d.severity, 0) > severity_rank.get(max_severity, 0):
+                max_severity = d.severity
+
+        primary_diagnosis = DiagnosisResult(
+            condition=" & ".join(combined_conditions),
+            confidence=max_confidence,
+            evidence=list(set(combined_evidence)),
+            severity=max_severity
+        )
+        
+        log(f"Decision Engine Result: {primary_diagnosis.condition} (Confidence: {primary_diagnosis.confidence}, Severity: {primary_diagnosis.severity})", "SOL")
 
         self.sm.transition(EngineState.STARTING)
         
@@ -195,7 +193,6 @@ class Orchestrator:
         if explanation:
             log(f"Decision Explainability: Selected {explanation.selected} over {explanation.alternatives}. Reasons: {explanation.evidence}", "INFO")
             
-            # Section 11: Use injected Telemetry DB
             if self.telemetry_db:
                 await self.telemetry_db.insert_decision_telemetry(
                     diagnosis=primary_diagnosis.condition, confidence=primary_diagnosis.confidence,
@@ -214,7 +211,6 @@ class Orchestrator:
             self.sm.transition(EngineState.DEGRADED)
 
     async def verify(self):
-        """Verifies if the proxy is actually working."""
         log("Verifying connection...", "INFO")
         if await pm.test_current_proxy_health(self.local_http_port):
             log("Verification successful. Entering ACTIVE state.", "PASS")
