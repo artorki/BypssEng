@@ -19,7 +19,6 @@ from telemetry.storage import TelemetryDB
 from telemetry.statistics import AdaptiveStatistics
 from runtime.admin_service import AdminIPCServer
 from core.logger import log as original_log
-import telemetry.storage as telemetry_module
 
 
 async def main():
@@ -31,6 +30,7 @@ async def main():
     runtime_session = RuntimeSession()
     runtime_session.setup_dynamic_ports()
 
+    # Local DB instance
     db = TelemetryDB(BypssEng.DB_PATH)
     await db.init()
     await db.cleanup_old_logs()
@@ -111,7 +111,7 @@ async def main():
         }
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(telemetry_module.db.insert_network_event(report))
+            loop.create_task(db.insert_network_event(report))
             loop.create_task(api_server.broadcaster.broadcast("network_update", report))
         except RuntimeError:
             pass
@@ -160,7 +160,7 @@ async def main():
         await runner.cleanup()
         await db.close()
         runtime_session.release_reserved_ports()
-        BypssEng.pm.cleanup_child_processes()
+        await BypssEng.pm.cleanup_child_processes()
 
 
 async def safe_cleanup():
