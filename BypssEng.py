@@ -1,7 +1,3 @@
-# BypssEng.py - Absolute Final Version (Post-Phase 11)
-# Incorporates all architectural changes from HANDOFF Sec 4, 11, 18, 19, 24, 54, 87
-# Fixed: Pipe Deadlock Prevention and Async Process Cleanup
-
 import asyncio
 import logging
 import argparse
@@ -12,7 +8,6 @@ import json
 import platform
 import inspect
 
-# Section 38: Standard Packaging fallback
 PACKAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bypsseng")
 if PACKAGE_DIR not in sys.path:
     sys.path.insert(0, PACKAGE_DIR)
@@ -32,7 +27,6 @@ from core.utils import parse_config_link, find_binary, atomic_write_json
 from diagnosis.health import scan_clean_cdn_ips
 import aiohttp
 
-# Paths Configuration
 APP_DIR = PACKAGE_DIR
 BIN_DIR = os.path.join(APP_DIR, "bin")
 DATA_DIR = os.path.join(APP_DIR, "Data")
@@ -47,9 +41,9 @@ CORE_DIR = os.path.join(APP_DIR, "core")
 logger = logging.getLogger("NetAnalyzer")
 DIAGNOSE_ONLY = False
 
-# ------------------------------------------------------------------
-# Core Binaries Discovery
-# ------------------------------------------------------------------
+_runtime_session = None
+_net_manager = None
+
 BINARY_PATHS = {
     "xray": find_binary("xray", BIN_DIR), 
     "hysteria": find_binary("hysteria", BIN_DIR),
@@ -62,9 +56,6 @@ BINARY_PATHS = {
     "dnstt-client": find_binary("dnstt-client", BIN_DIR),
 }
 
-# ------------------------------------------------------------------
-# Helper Functions for API Server (Bridges to new Architecture)
-# ------------------------------------------------------------------
 def load_unified_config():
     if not os.path.exists(UNIFIED_CONFIG_FILE):
         return {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None}
@@ -75,7 +66,6 @@ def load_unified_config():
         return {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None}
 
 def generate_network_report(states, applied_bypass="none", diagnosis=None, selected_method=None):
-    """Section 54: Machine-readable report generation with stable schema."""
     if not diagnosis:
         diagnosis = []
     if not selected_method:
@@ -111,7 +101,6 @@ def generate_network_report(states, applied_bypass="none", diagnosis=None, selec
     return report.get("verdict")
 
 def is_root_or_admin():
-    """Checks if the script is running with Administrator/root privileges."""
     if platform.system().lower() == 'windows':
         try:
             import ctypes
@@ -121,7 +110,6 @@ def is_root_or_admin():
     return hasattr(os, 'geteuid') and os.geteuid() == 0
 
 def load_state():
-    """Helper function for API Server to read network state."""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
@@ -131,7 +119,6 @@ def load_state():
     return {}
 
 async def fetch_fresh_configs(wait=True):
-    """Helper function for API Server to trigger config fetching."""
     try:
         sys.path.insert(0, CORE_DIR)
         import cnfg
@@ -155,7 +142,6 @@ async def fetch_fresh_configs(wait=True):
         return True
 
 async def check_config_latency(parsed_creds):
-    """Helper function for API Server to test config latency."""
     try:
         host = parsed_creds.get(f"{parsed_creds['protocol']}_server_ip")
         port = parsed_creds.get(f"{parsed_creds['protocol']}_port")
@@ -171,9 +157,6 @@ async def check_config_latency(parsed_creds):
     except Exception:
         return None
 
-# ------------------------------------------------------------------
-# Phase 2: Adaptive Bypass Executor (Integrated with Runtime & DI)
-# ------------------------------------------------------------------
 async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeSession, net_manager: SystemNetworkManager):
     async with pm.strategy_lock:
         old_procs = pm.active_procs[:] if pm.active_procs else []
@@ -183,7 +166,6 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
         runtime_session.setup_dynamic_ports()
         
         async def restore_state_on_failure():
-            # Bug Fix: Added await for async cleanup
             await pm.cleanup_child_processes()
             runtime_session.local_socks_port = old_socks
             runtime_session.local_http_port = old_http
@@ -213,7 +195,6 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
             commands = strategy.processes()
             pm.active_procs = []
             
-            # Bug Fix: Pipe Deadlock Prevention
             async def tail_logs(stream, prefix):
                 while True:
                     line = await stream.readline()
@@ -233,16 +214,14 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
                 pm._assign_to_job(proc)
                 pm.active_procs.append(proc)
                 
-                # Start background tasks to drain pipes continuously
                 if proc.stdout:
                     asyncio.create_task(tail_logs(proc.stdout, "STDOUT"))
                 if proc.stderr:
                     asyncio.create_task(tail_logs(proc.stderr, "STDERR"))
             
-            # Section 87: Give heavy strategies enough time to bootstrap
             wait_time = 3
             if creds["protocol"] in ["tor_proxy", "tor_snowflake", "psiphon"]:
-                wait_time = 20  # Tor and Psiphon need more time to connect
+                wait_time = 25
             elif creds["protocol"] == "dnstt":
                 wait_time = 10
                 
@@ -279,7 +258,6 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
             return False
 
 async def bypass_executor_wrapper(states, diagnosis_result, runtime_session, net_manager, db, adaptive_stats):
-    """Section 24: Adaptive Engine Integration. Wires statistics into the scoring loop."""
     log(f"Executing bypass based on diagnosis: {diagnosis_result.condition}", "SOL")
     
     unified_cfg = load_unified_config()
@@ -287,9 +265,7 @@ async def bypass_executor_wrapper(states, diagnosis_result, runtime_session, net
     parsed_configs = [parse_config_link(link) for link in config_links]
     valid_configs = [c for c in parsed_configs if c["protocol"] != "unsupported"]
     
-    # اضافه شدن Fallbackهای داخلی با اولویت WARP (با IP تمیز)
     if unified_cfg.get("warp"): 
-        # اسکن IP تمیز برای WARP
         clean_ips = await scan_clean_cdn_ips(cdn_provider="cloudflare", worker_host="engage.cloudflareclient.com", worker_path="/", count=3)
         if clean_ips:
             log(f"Found {len(clean_ips)} clean Cloudflare IPs for WARP. Adding WARP as primary fallback.", "SOL")
@@ -336,71 +312,73 @@ async def bypass_executor_wrapper(states, diagnosis_result, runtime_session, net
     generate_network_report(states, "failed", [diagnosis_result.condition], "failed")
     return False, None
 
-# ------------------------------------------------------------------
-# Phase 6 & 10: Main Entry Point with Crash Recovery & Watchdog
-# ------------------------------------------------------------------
+async def manual_connect(link: str) -> bool:
+    global _runtime_session, _net_manager
+    if not _runtime_session or not _net_manager:
+        log("Engine not ready for manual connect.", "WARN")
+        return False
+        
+    creds = parse_config_link(link)
+    if creds["protocol"] == "unsupported":
+        log("Invalid config link for manual connect.", "WARN")
+        return False
+        
+    log(f"Manual connection attempt to {creds['protocol']} server...", "SOL")
+    asyncio.create_task(execute_bypass_and_connect(creds, 'none', _runtime_session, _net_manager))
+    return True
+
 async def main():
-    """Composition Root: Wires all dependencies and runs the Orchestrator (Section 4, 87)."""
+    global _runtime_session, _net_manager
     
-    # 1. Setup Infrastructure (Phase 19: SystemNetworkManager)
-    net_manager = SystemNetworkManager(STATE_FILE)
+    _net_manager = SystemNetworkManager(STATE_FILE)
     
-    # 2. Crash Recovery (Phase 87: deterministic lifecycle)
     log("Performing startup recovery policy...", "SOL")
-    await net_manager.restore_system_state()
+    await _net_manager.restore_system_state()
     
-    # 3. Setup Runtime Session (Phase 18: Encapsulated State)
-    runtime_session = RuntimeSession()
-    runtime_session.setup_dynamic_ports()
+    _runtime_session = RuntimeSession()
+    _runtime_session.setup_dynamic_ports()
     
-    # 4. Setup Telemetry & Adaptive Learning (Phase 11 DI, Phase 24/25 Learning)
     db = TelemetryDB(DB_PATH)
     await db.init()
     await db.cleanup_old_logs()
     adaptive_stats = AdaptiveStatistics(db)
     
-    # 5. Setup Orchestrator with all injected dependencies
     async def executor_wrapper(states, diagnosis_result):
-        return await bypass_executor_wrapper(states, diagnosis_result, runtime_session, net_manager, db, adaptive_stats)
+        return await bypass_executor_wrapper(states, diagnosis_result, _runtime_session, _net_manager, db, adaptive_stats)
 
     orchestrator = Orchestrator(
         app_dir=APP_DIR,
         bypass_executor=executor_wrapper,
         telemetry_db=db,
-        runtime_session=runtime_session,
-        net_manager=net_manager,
+        runtime_session=_runtime_session,
+        net_manager=_net_manager,
         report_callback=generate_network_report,
-        fetch_config_callback=fetch_fresh_configs  # Added for auto-fetching configs
+        fetch_config_callback=fetch_fresh_configs
     )
-    orchestrator.local_http_port = runtime_session.local_http_port
+    orchestrator.local_http_port = _runtime_session.local_http_port
 
-    # Section 88: Final product vision - Adaptive Engine
     print(f"{Colors.BOLD}Advanced Adaptive Anti-Censorship Engine Started.{Colors.ENDC}\n")
     
-    # Section 73: Productionization - Watchdog loop
     while True:
         try:
             await orchestrator.run()
-            break  # Exit if run finishes normally
+            break
         except asyncio.CancelledError:
             raise
         except Exception as e:
             log(f"CRITICAL: Engine crashed unexpectedly: {e}. Restarting in 5 seconds...", "ERROR")
             logger.exception("Watchdog caught exception")
             await asyncio.sleep(5)
-            # Reset state machine for fresh start
             from engine.state_machine import EngineState
             orchestrator.sm.state = EngineState.RESELECTING
 
-    # Cleanup on exit
     await db.close()
-    runtime_session.release_reserved_ports()
+    _runtime_session.release_reserved_ports()
     await pm.cleanup_child_processes()
     if not DIAGNOSE_ONLY:
-        await net_manager.set_system_proxy(False)
+        await _net_manager.set_system_proxy(False)
 
 if __name__ == "__main__":
-    # Section 54: CLI Modes (Diagnose-only, Research)
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnose-only", action="store_true", help="Only run tests, output machine-readable report.json")
     parser.add_argument("--research", action="store_true", help="Enable extensive logging and telemetry")
@@ -422,3 +400,5 @@ if __name__ == "__main__":
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
         log("Shutdown complete.", "INFO")
+
+
