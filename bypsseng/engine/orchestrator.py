@@ -18,10 +18,6 @@ from runtime.process import pm
 logger = logging.getLogger("NetAnalyzer")
 
 class Orchestrator:
-    """
-    Heart of the control lifecycle (HANDOFF Sec 2, 16).
-    Orchestrator owns State. RuntimeManager owns OS Process. Strategy owns definition.
-    """
     def __init__(self, app_dir, bypass_executor, telemetry_db, runtime_session=None, net_manager=None, report_callback=None, progress_callback=None, fetch_config_callback=None, diagnose_only=False):
         self.app_dir = app_dir
         self.bypass_executor = bypass_executor
@@ -153,7 +149,6 @@ class Orchestrator:
         self.sm.transition(EngineState.DIAGNOSIS_READY)
 
     async def select_and_connect(self):
-        """Evaluates rules and executes bypass strategy using Multi-observation Context."""
         self.sm.transition(EngineState.SELECTING)
         diagnoses = self.rule_engine.evaluate(self.states)
         
