@@ -42,6 +42,8 @@
         .report-paragraph strong { color: var(--blue); }
         .proto-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
         a.export-link { color: var(--blue); text-decoration: none; font-size: 12px; margin-top: 10px; display: inline-block; }
+        .config-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+        .config-item button { width: auto; padding: 5px 10px; margin: 0; }
     </style>
 </head>
 <body>
@@ -83,9 +85,9 @@
 
     <div class="grid">
         <div class="card">
-            <h3>خلاصه کانفیگ‌ها (حریم خصوصی ایمن)</h3>
-            <div id="config-summary" style="font-size: 14px; line-height: 1.6;">
-                <div style="color:var(--muted)">در حال دریافت خلاصه...</div>
+            <h3>لیست کانفیگ‌های آماده (برای اتصال دستی)</h3>
+            <div id="config-list" style="max-height: 250px; overflow-y: auto; margin-bottom: 15px;">
+                <div style="color:var(--muted)">در حال دریافت لیست...</div>
             </div>
         </div>
         <div class="card">
@@ -105,7 +107,7 @@
             <div id="sub-status" class="status-text"></div>
         </div>
         <div class="card">
-            <h3>تست دستی کانفیگ</h3>
+            <h3>تست دستی کانفیگ (پینگ)</h3>
             <div class="input-group">
                 <input type="text" id="config-link" placeholder="لینک کانفیگ (vless, trojan, ...)">
                 <button onclick="testConfig()">تست پینگ</button>
@@ -173,19 +175,27 @@
                 const res = await fetch('/api/configs', { headers: { 'Authorization': `Bearer ${token}` } });
                 if(res.ok) {
                     const data = await res.json();
-                    const summaryDiv = document.getElementById('config-summary');
-                    if (data.total_configs === 0) {
-                        summaryDiv.innerHTML = '<div style="color:var(--yellow)">در حال حاضر هیچ کانفیگی موجود نیست. سیستم در حال تلاش برای دریافت کانفیگ‌های رایگان است...</div>';
+                    const listDiv = document.getElementById('config-list');
+                    listDiv.innerHTML = '';
+                    
+                    if (!data.configs || data.configs.length === 0) {
+                        listDiv.innerHTML = '<div style="color:var(--muted)">هنوز کانفیگی موجود نیست. ساب‌اسکریپشن اضافه کنید یا منتظر دریافت خودکار بمانید.</div>';
                         return;
                     }
-                    let html = `<div>تعداد کل کانفیگ‌ها: <strong>${data.total_configs}</strong></div>`;
-                    html += `<div>وضعیت WARP: <span class="badge ${data.has_warp ? 'ok' : 'fail'}">${data.has_warp ? 'فعال' : 'غیرفعال'}</span></div>`;
-                    html += '<div class="proto-list">';
-                    for(const proto in data.protocols) {
-                        html += `<div class="badge ok">${proto}: ${data.protocols[proto]}</div>`;
-                    }
-                    html += '</div>';
-                    summaryDiv.innerHTML = html;
+                    
+                    data.configs.forEach(c => {
+                        const item = document.createElement('div');
+                        item.className = 'config-item';
+                        const encodedLink = btoa(c.link);
+                        item.innerHTML = `
+                            <div>
+                                <span class="badge ok" style="margin-left:10px;">${c.protocol}</span>
+                                <span style="font-size: 13px;">${c.host}:${c.port}</span>
+                            </div>
+                            <button onclick="connectManual('${encodedLink}')">اتصال</button>
+                        `;
+                        listDiv.appendChild(item);
+                    });
                 }
             } catch(e) {}
         }
@@ -227,8 +237,8 @@
             const badgeEl = document.getElementById('engine-action-box');
             const msg = log.msg;
 
-            if (msg.includes("Attempting strategy:")) {
-                const strategy = msg.split("Attempting strategy:")[1].split("(")[0].trim();
+            if (msg.includes("Attempting strategy:") || msg.includes("Manual connection attempt")) {
+                let strategy = msg.includes("Manual") ? msg.split("to")[1].split("server")[0].trim() : msg.split("Attempting strategy:")[1].split("(")[0].trim();
                 actionEl.innerText = `در حال اتصال با: ${strategy}`;
                 actionEl.style.color = "var(--blue)";
                 badgeEl.className = "badge warn";
@@ -238,7 +248,7 @@
                 actionEl.style.color = "var(--green)";
                 badgeEl.className = "badge ok";
                 badgeEl.innerText = "فعال";
-            } else if (msg.includes("Bypass execution failed")) {
+            } else if (msg.includes("Bypass execution failed") || msg.includes("Proxy failed")) {
                 actionEl.innerText = "اتصال ناموفق بود، در حال تلاش مجدد...";
                 actionEl.style.color = "var(--red)";
                 badgeEl.className = "badge fail";
@@ -253,12 +263,10 @@
 
         function updateDiagnosis(payload) {
             if (payload.phase === 'start') {
-                // Finalize previous diagnosis
                 if (currentDiagnosis && currentDiagnosis.phases.length > 0) {
                     currentDiagnosis.endTime = new Date().toLocaleTimeString('fa-IR');
                     diagnosisTimeline.unshift(currentDiagnosis);
                 }
-                // Start new diagnosis
                 currentDiagnosis = {
                     startTime: new Date().toLocaleTimeString('fa-IR'),
                     endTime: 'اکنون',
@@ -270,9 +278,7 @@
                 return;
             }
             
-            if (payload.phase === 'final') {
-                return;
-            }
+            if (payload.phase === 'final') return;
 
             if (payload.status === 'done') {
                 const progress = (payload.phase / 5) * 100;
@@ -358,6 +364,31 @@
             });
         }
 
+        async function connectManual(encodedLink) {
+            const link = atob(encodedLink); // Decode base64 link
+            const statusDiv = document.getElementById('sub-status');
+            statusDiv.innerText = "در حال تلاش برای اتصال دستی...";
+            statusDiv.style.color = "var(--yellow)";
+            
+            try {
+                const res = await fetch('/api/configs/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({link: link})
+                });
+                const data = await res.json();
+                if(res.ok) {
+                    statusDiv.innerText = "در حال اتصال... وضعیت را در داشبورد بالا ببینید.";
+                    statusDiv.style.color = "var(--blue)";
+                } else {
+                    throw new Error(data.error || "Engine not ready");
+                }
+            } catch(e) {
+                statusDiv.innerText = `خطا: ${e.message}`;
+                statusDiv.style.color = "var(--red)";
+            }
+        }
+
         async function saveSub() {
             const url = document.getElementById('sub-url').value;
             if(!url) return;
@@ -372,8 +403,10 @@
                 });
                 const data = await res.json();
                 if(res.ok) {
-                    statusDiv.innerText = "لینک ذخیره شد. کانفیگ‌ها در پس‌زمینه دریافت می‌شوند.";
+                    statusDiv.innerText = "لینک ذخیره شد. در حال دریافت کانفیگ‌ها در پس‌زمینه...";
                     statusDiv.style.color = "var(--green)";
+                    // Refresh config list after 10 seconds to allow fetching
+                    setTimeout(fetchConfigs, 10000);
                 } else {
                     throw new Error(data.error);
                 }
