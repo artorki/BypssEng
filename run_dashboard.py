@@ -30,7 +30,6 @@ async def main():
     runtime_session = RuntimeSession()
     runtime_session.setup_dynamic_ports()
 
-    # Local DB instance
     db = TelemetryDB(BypssEng.DB_PATH)
     await db.init()
     await db.cleanup_old_logs()
@@ -207,3 +206,4 @@ if __name__ == "__main__":
             pass
         loop.close()
         print("Shutdown complete.")
+
