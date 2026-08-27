@@ -18,14 +18,14 @@ from core.utils import parse_config_link
 
 try:
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.serialization import serialization
 except ImportError:
     logging.getLogger("ConfigFetcher").error("Error: 'cryptography' is not installed.")
     sys.exit(1)
 
 logger = logging.getLogger("ConfigFetcher")
 
-FREE_CONFIGS_URLS = [
+_PRIMARY_CONFIG_URLS = [
     "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/mixed",
     "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/vless",
     "https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/trojan",
@@ -45,10 +45,27 @@ FREE_CONFIGS_URLS = [
     "https://raw.githubusercontent.com/Danialsamadi/v2go/main/merged"
 ]
 
+def _github_mirror_urls(urls):
+
+    prefix = "https://raw.githubusercontent.com/"
+    mirrors = []
+    for url in urls:
+        if not url.startswith(prefix): continue
+        parts = url[len(prefix):].split("/", 3)
+        if len(parts) != 4: continue
+        owner, repo, branch, path = parts
+        mirrors.append(f"https://fastly.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}")
+        mirrors.append(f"https://raw.githack.com/{owner}/{repo}/{branch}/{path}")
+        mirrors.append(f"https://ghproxy.com/{url}")
+    return mirrors
+
+FREE_CONFIGS_URLS = _PRIMARY_CONFIG_URLS + _github_mirror_urls(_PRIMARY_CONFIG_URLS)
+
 OUTPUT_FILE = "cnfg.json"
 
 HARDCODED_DNS = {
     "raw.githubusercontent.com": ["185.199.108.133", "185.199.109.133", "185.199.110.133", "185.199.111.133"],
+    "cdn.jsdelivr.net": ["104.16.85.20", "104.16.86.20"],
     "api.cloudflareclient.com": ["162.159.192.1", "162.159.193.1", "188.114.96.1", "188.114.97.1", "104.16.0.1", "104.17.0.1"]
 }
 
@@ -237,7 +254,7 @@ def extract_cloudflare_worker(configs):
         return workers_found[0]
     return None
 
-async def fetch_from_url(url):
+async def fetch_from_url(url, proxy_url=None):
     proxy = get_windows_proxy()
     timeout = aiohttp.ClientTimeout(total=15)
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -262,13 +279,24 @@ async def fetch_from_url(url):
         except Exception as e:
             logger.debug(f"Direct GitHub fetch failed for {url}: {e}")
 
+        jsdelivr_url = url.replace("https://raw.githubusercontent.com/", "https://cdn.jsdelivr.net/gh/").replace("/main/", "@main/").replace("/master/", "@master/")
         try:
-            jsdelivr_url = url.replace("https://raw.githubusercontent.com/", "https://cdn.jsdelivr.net/gh/").replace("/main/", "@main/").replace("/master/", "@master/")
             async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
                 async with session.get(jsdelivr_url, headers=headers) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
             logger.debug(f"jsDelivr fetch failed for {url}: {e}")
+
+        try:
+            ssl_ctx = ssl.create_default_context()
+            target_ip = random.choice(HARDCODED_DNS["cdn.jsdelivr.net"])
+            resolver = ForceIPResolver(target_ip=target_ip)
+            connector = aiohttp.TCPConnector(resolver=resolver, ssl=ssl_ctx)
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector, trust_env=False) as session:
+                async with session.get(jsdelivr_url, headers=headers) as resp:
+                    if resp.status == 200: return await resp.text()
+        except Exception as e:
+            logger.debug(f"jsDelivr (hardcoded IP) fetch failed for {url}: {e}")
 
         try:
             githack_url = url.replace("https://raw.githubusercontent.com/", "https://raw.githack.com/")
@@ -286,13 +314,23 @@ async def fetch_from_url(url):
         except Exception as e:
             logger.debug(f"Direct fetch failed for {url}: {e}")
 
+    if proxy_url:
+        try:
+            from aiohttp_socks import ProxyConnector
+            connector = ProxyConnector.from_url(proxy_url)
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector, trust_env=False) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200: return await resp.text()
+        except Exception as e:
+            logger.debug(f"Bootstrap-proxy fetch failed for {url}: {e}")
+
     logger.warning(f"Failed to fetch from {url}")
     return None
 
-async def fetch_public_configs():
+async def fetch_public_configs(bootstrap_proxy=None):
     logger.info("Fetching public configs...")
     all_links = []
-    tasks = [fetch_from_url(url) for url in FREE_CONFIGS_URLS]
+    tasks = [fetch_from_url(url, proxy_url=bootstrap_proxy) for url in FREE_CONFIGS_URLS]
     results = await asyncio.gather(*tasks)
     for content in results:
         if content: all_links.extend(extract_configs_from_text(content))
@@ -300,8 +338,11 @@ async def fetch_public_configs():
     alive_links = await filter_alive_configs(unique_links)
     return alive_links
 
-async def main(override_urls=None):
+async def main(override_urls=None, bootstrap_proxy: str = None):
     output_data = {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None, "psiphon": None, "dnstt": None}
+
+    if bootstrap_proxy:
+        logger.info(f"Bootstrap proxy active for this fetch cycle: {bootstrap_proxy}")
 
     if os.path.exists(OUTPUT_FILE):
         try:
@@ -318,7 +359,7 @@ async def main(override_urls=None):
 
     if user_subs:
         logger.info("Fetching user custom subscriptions...")
-        tasks = [fetch_from_url(url) for url in user_subs]
+        tasks = [fetch_from_url(url, proxy_url=bootstrap_proxy) for url in user_subs]
         results = await asyncio.gather(*tasks)
         for content in results:
             if content: all_links.extend(extract_configs_from_text(content))
@@ -328,7 +369,7 @@ async def main(override_urls=None):
             atomic_write_json(OUTPUT_FILE, output_data)
             logger.info("User subs saved temporarily. Fetching public configs...")
 
-    public_links = await fetch_public_configs()
+    public_links = await fetch_public_configs(bootstrap_proxy=bootstrap_proxy)
     all_links.extend(public_links)
     
     if all_links: 
@@ -346,6 +387,7 @@ async def main(override_urls=None):
 
     atomic_write_json(OUTPUT_FILE, output_data)
     logger.info("Data saved successfully.")
+    logger.info(f"Fetch cycle finished: {len(output_data['configs'])} usable configs saved.")
 
 if __name__ == "__main__":
     asyncio.run(main())

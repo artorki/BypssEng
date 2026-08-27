@@ -11,6 +11,7 @@ logger = logging.getLogger("NetAnalyzer")
 class ProcessManager:
     def __init__(self):
         self.active_procs: List[asyncio.subprocess.Process] = []
+        self.bootstrap_procs: List[asyncio.subprocess.Process] = []
         self.strategy_lock = asyncio.Lock()
         self.job_handle = None
 
@@ -36,11 +37,42 @@ class ProcessManager:
             except Exception as e:
                 logger.debug(f"Failed to assign process to job: {e}")
 
+    def register_bootstrap_proc(self, proc: Optional[asyncio.subprocess.Process]):
+
+        if proc is None:
+            return
+        self.bootstrap_procs.append(proc)
+        self._assign_to_job(proc)
+        logger.info(f"Bootstrap process registered (PID: {proc.pid}).")
+
+    async def stop_bootstrap_proc(self, proc: Optional[asyncio.subprocess.Process]):
+
+        if proc is None:
+            return
+        if proc in self.bootstrap_procs:
+            self.bootstrap_procs.remove(proc)
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=10)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                logger.info(f"Bootstrap process stopped (PID: {proc.pid}).")
+            except Exception as e:
+                logger.error(f"Error stopping bootstrap process: {e}")
+
+    async def cleanup_bootstrap_procs(self):
+
+        for proc in self.bootstrap_procs[:]:
+            await self.stop_bootstrap_proc(proc)
+
     def kill_stale_processes(self):
         try:
             import psutil
             target_names = ["xray", "xray.exe", "tor", "tor.exe", "hysteria", "tuic", "naive", "sing-box", "dnstt-client"]
-            current_pids = [p.pid for p in self.active_procs if p and p.returncode is None]
+            current_pids = [p.pid for p in self.active_procs + self.bootstrap_procs if p and p.returncode is None]
             
             killed_count = 0
             for proc in psutil.process_iter(['pid', 'name']):

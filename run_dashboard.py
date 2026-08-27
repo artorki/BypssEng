@@ -19,7 +19,7 @@ from infrastructure.runtime_session import RuntimeSession
 from telemetry.storage import TelemetryDB
 from telemetry.statistics import AdaptiveStatistics
 from runtime.admin_service import AdminIPCServer
-from core.logger import log as original_log, BroadcastLogHandler
+from core.logger import log as original_log, BroadcastLogHandler, logger as core_logger
 import telemetry.storage as telemetry_module
 
 async def main():
@@ -59,10 +59,13 @@ async def main():
             pass
 
     BypssEng.log = hooked_log
-    
-    root_logger = logging.getLogger()
-    root_logger.addHandler(BroadcastLogHandler(hooked_log))
-    root_logger.setLevel(logging.INFO)
+
+    logging.getLogger("NetAnalyzer").propagate = False
+
+    logging.getLogger().addHandler(BroadcastLogHandler(hooked_log))
+    logging.getLogger().setLevel(logging.INFO)
+
+    core_logger.propagate = False
 
     original_report = BypssEng.generate_network_report
     def hooked_report(states, applied_bypass="none", diagnosis=None, selected_method=None):
@@ -76,12 +79,21 @@ async def main():
             pass
     BypssEng.generate_network_report = hooked_report
 
+    def broadcast_config_fetch_result_hook(count, success=True):
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(api_server.broadcast_config_fetch_result(count, success))
+        except RuntimeError:
+            pass
+
+    BypssEng.config_fetch_result_callback = broadcast_config_fetch_result_hook
+
     app = await api_server.create_app()
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, "127.0.0.1", 8080)
     await site.start()
-    
+
     BypssEng.log(f"Dashboard is running on http://127.0.0.1:8080", "SOL")
     webbrowser.open(f"http://127.0.0.1:8080?token={api_server.DASHBOARD_TOKEN}")
 
@@ -105,7 +117,7 @@ async def main():
     orchestrator.local_http_port = runtime_session.local_http_port
 
     engine_task = asyncio.create_task(orchestrator.run())
-    
+
     try:
         await engine_task
     except asyncio.CancelledError:
@@ -116,6 +128,7 @@ async def main():
         await db.close()
         runtime_session.release_reserved_ports()
         await BypssEng.pm.cleanup_child_processes()
+        await BypssEng.pm.cleanup_bootstrap_procs()
 
 async def safe_cleanup():
     try:

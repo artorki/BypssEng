@@ -1,54 +1,110 @@
 {
-  "version": "3.0.0",
-  "last_updated": "2026-08-22T10:00:00Z",
-  "assets": [
-    {
-      "name": "geoip",
-      "filename": "geoip.dat",
-      "source_url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
-      "sha256": "e4d2e1f7a3b9c8d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8",
-      "target_dir": "Data",
-      "version": "latest"
-    },
-    {
-      "name": "geosite",
-      "filename": "geosite.dat",
-      "source_url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
-      "sha256": "f1e2d3c4b5a69788776655443322110099887766554433221100998877665544",
-      "target_dir": "Data",
-      "version": "latest"
-    },
-    {
-      "name": "xray",
-      "filename": "xray.exe",
-      "source_url": "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-windows-64.zip",
-      "sha256": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
-      "target_dir": "bin",
-      "version": "latest"
-    },
-    {
-      "name": "tor",
-      "filename": "tor.exe",
-      "source_url": "https://www.torproject.org/dist/torbrowser/13.0.1/tor-win64-0.4.8.7.zip",
-      "sha256": "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
-      "target_dir": "bin",
-      "version": "0.4.8.7"
-    },
-    {
-      "name": "snowflake-client",
-      "filename": "snowflake-client.exe",
-      "source_url": "https://github.com/plos-clan/snowflake/releases/latest/download/snowflake-windows-amd64.zip",
-      "sha256": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
-      "target_dir": "bin",
-      "version": "latest"
-    },
-    {
-      "name": "wintun",
-      "filename": "wintun.dll",
-      "source_url": "https://www.wintun.net/builds/wintun-0.14.1.zip",
-      "sha256": "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8",
-      "target_dir": "bin",
-      "version": "0.14.1"
-    }
-  ]
+    "version": "3.0.0",
+    "last_updated": "2026-08-22T00:00:00Z",
+    "assets": [
+        {
+            "name": "geoip",
+            "filename": "geoip.dat",
+            "source_url": "PLACEHOLDER_URL_FOR_geoip",
+            "sha256": "744c97b74c52bae2ac8664fef6ac481d7765cb8432a0df54f0368a88b9b4a354",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "geosite",
+            "filename": "geosite.dat",
+            "source_url": "PLACEHOLDER_URL_FOR_geosite",
+            "sha256": "adf92de0cfc70e458b399f04c5f912bf42d115ed7e37281b30e2f1c68605e4e9",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "h",
+            "filename": "h.py",
+            "source_url": "PLACEHOLDER_URL_FOR_h",
+            "sha256": "d87a42915e9e386aeb618b05b4d5b491523e8015e73ddf924144c1043264f1d1",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "hysteria",
+            "filename": "hysteria.exe",
+            "source_url": "PLACEHOLDER_URL_FOR_hysteria",
+            "sha256": "f1f782532aa20fe72574393a0e3775cfe10f7edb07f9af6b7bca5c85e2afdd6c",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "lyrebird",
+            "filename": "lyrebird.exe",
+            "source_url": "PLACEHOLDER_URL_FOR_lyrebird",
+            "sha256": "2da631ab1f8e18134ee1691d847adb82495904dd7d70b272669d8ffb9d785dfe",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "naive",
+            "filename": "naive.exe",
+            "source_url": "PLACEHOLDER_URL_FOR_naive",
+            "sha256": "94f99801c665d29fc071624663c6f7bfa59e8d5efaa84cd08ef5ebb18b46cb62",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "psiphon-tunnel-core",
+            "filename": "psiphon-tunnel-core.exe",
+            "source_url": "PLACEHOLDER_URL_FOR_psiphon-tunnel-core",
+            "sha256": "aec4c8221808227e8cfe50efcc9c6f18964fe8928a25b3d925973bff33b874b2",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "tor",
+            "filename": "tor.exe",
+            "source_url": "PLACEHOLDER_URL_FOR_tor",
+            "sha256": "ec7708e0b43e0e00b1533d11ed3ca244e6f11cb2a7b62d319ad73a7b13123033",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "tuic",
+            "filename": "tuic.exe",
+            "source_url": "PLACEHOLDER_URL_FOR_tuic",
+            "sha256": "28abb1bab9c06450b2bb4292f4cdd725daec56181a71f098dfcb2e8b3ab12ba3",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "wintun",
+            "filename": "wintun.dll",
+            "source_url": "PLACEHOLDER_URL_FOR_wintun",
+            "sha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "xray",
+            "filename": "xray.exe",
+            "source_url": "PLACEHOLDER_URL_FOR_xray",
+            "sha256": "15c2d007954ac53ba69b80ec91242786b3c0b71d52649165b4ca1d5cc96ef8f1",
+            "target_dir": "bin",
+            "version": "latest"
+        },
+        {
+            "name": "psiphon_config",
+            "filename": "psiphon_config.json",
+            "source_url": "PLACEHOLDER_URL_FOR_psiphon_config",
+            "sha256": "ba36181817027b7f86471634ef63b4f626d47a430df426c09ef4de7e16209b89",
+            "target_dir": "Data",
+            "version": "latest"
+        },
+        {
+            "name": "torrc_proxy",
+            "filename": "torrc_proxy",
+            "source_url": "PLACEHOLDER_URL_FOR_torrc_proxy",
+            "sha256": "dee15eba2e64e6fb66f961a33c882a052111647709ded77af04827d65b1b5bb4",
+            "target_dir": "Data",
+            "version": "latest"
+        }
+    ]
 }

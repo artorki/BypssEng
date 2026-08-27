@@ -7,6 +7,8 @@ import time
 import json
 import platform
 import inspect
+import socket
+import importlib.util
 
 PACKAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bypsseng")
 if PACKAGE_DIR not in sys.path:
@@ -20,6 +22,7 @@ from infrastructure.system_network import SystemNetworkManager
 from infrastructure.runtime_session import RuntimeSession
 from runtime.process import pm
 from strategies.registry import get_strategy
+from strategies.adapters.tor import start_bootstrap_tor
 from decision.scorer import score_strategy
 from telemetry.storage import TelemetryDB
 from telemetry.statistics import AdaptiveStatistics
@@ -40,6 +43,10 @@ CORE_DIR = os.path.join(APP_DIR, "core")
 
 logger = logging.getLogger("NetAnalyzer")
 DIAGNOSE_ONLY = False
+
+_direct_fetch_failed = False
+
+config_fetch_result_callback = None
 
 _runtime_session = None
 _net_manager = None
@@ -118,28 +125,123 @@ def load_state():
             return {}
     return {}
 
-async def fetch_fresh_configs(wait=True):
+def _has_usable_configs():
     try:
+        with open(UNIFIED_CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return len(data.get("configs", [])) > 0
+    except Exception:
+        return False
+
+def _notify_config_fetch_result(success=True):
+
+    if config_fetch_result_callback is None:
+        return
+    try:
+        count = len(load_unified_config().get("configs", []))
+        config_fetch_result_callback(count, success)
+    except Exception as e:
+        logger.debug(f"Config fetch result callback failed: {e}")
+
+async def _launch_bootstrap_tor(bootstrap_timeout=90):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        socks_port = sock.getsockname()[1]
+    finally:
+        sock.close()
+
+    proc, socks_url = await start_bootstrap_tor(
+        socks_port=socks_port,
+        tor_binary=BINARY_PATHS.get("tor"),
+        snowflake_binary=BINARY_PATHS.get("snowflake"),
+        data_dir=os.path.join(DATA_DIR, "bootstrap_tor"),
+        bootstrap_timeout=bootstrap_timeout,
+    )
+    if proc is None:
+        return None, None
+
+    pm.register_bootstrap_proc(proc)
+    return proc, socks_url
+
+async def fetch_fresh_configs(wait=True):
+
+    log("Attempting to fetch fresh configs...", "SOL")
+    original_cwd = os.getcwd()
+
+    needs_bootstrap = _direct_fetch_failed
+
+    bootstrap_proc = None
+    bootstrap_proxy = None
+    tor_owned_by_task = False
+
+    try:
+        os.chdir(DATA_DIR)
         sys.path.insert(0, CORE_DIR)
         import cnfg
-        if inspect.iscoroutinefunction(cnfg.main):
-            if wait:
-                await cnfg.main()
+
+        if needs_bootstrap:
+            if importlib.util.find_spec("aiohttp_socks") is None:
+                log("Bootstrap proxy needs the 'aiohttp_socks' package (pip install aiohttp_socks); retrying direct fetch.", "WARN")
             else:
-                asyncio.create_task(cnfg.main())
+                log("Previous direct fetch failed. Starting temporary Tor bootstrap proxy...", "WARN")
+                bootstrap_proc, bootstrap_proxy = await _launch_bootstrap_tor()
+                if bootstrap_proxy:
+                    log(f"Bootstrap SOCKS proxy ready at {bootstrap_proxy}", "PASS")
+                else:
+                    log("Bootstrap proxy unavailable; retrying direct fetch.", "WARN")
+
+        async def run_cnfg():
+            global _direct_fetch_failed
+            saved_cwd = os.getcwd()
+            fetch_ok = False
+            try:
+                os.chdir(DATA_DIR)
+                await cnfg.main(bootstrap_proxy=bootstrap_proxy)
+                log("Background config fetch completed successfully.", "PASS")
+                _direct_fetch_failed = not _has_usable_configs()
+                fetch_ok = True
+            except Exception as e:
+                log(f"Background config fetch failed: {e}", "ERROR")
+                _direct_fetch_failed = True
+            finally:
+                os.chdir(saved_cwd)
+                await pm.stop_bootstrap_proc(bootstrap_proc)
+                _notify_config_fetch_result(success=fetch_ok)
+
+        if wait:
+            await run_cnfg()
+        else:
+            tor_owned_by_task = True
+            asyncio.create_task(run_cnfg())
         return True
-    except ImportError:
+    except ImportError as e:
+        log(f"Failed to import cnfg module: {e}. Falling back to subprocess.", "WARN")
         import subprocess
         cmd = [sys.executable, os.path.join(CORE_DIR, "cnfg.py")]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, 
-            stdout=asyncio.subprocess.PIPE, 
-            stderr=asyncio.subprocess.PIPE, 
-            cwd=DATA_DIR
-        )
-        if wait:
-            await proc.communicate()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, 
+                stdout=asyncio.subprocess.PIPE, 
+                stderr=asyncio.subprocess.PIPE, 
+                cwd=DATA_DIR
+            )
+            if wait:
+                stdout, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    err_msg = stderr.decode(errors='ignore')
+                    log(f"cnfg.py subprocess failed: {err_msg}", "ERROR")
+                    _notify_config_fetch_result(success=False)
+                else:
+                    log("cnfg.py subprocess completed successfully.", "PASS")
+                    _notify_config_fetch_result(success=True)
+        except Exception as e:
+            log(f"Failed to run cnfg subprocess: {e}", "ERROR")
         return True
+    finally:
+        if bootstrap_proc is not None and not tor_owned_by_task:
+            await pm.stop_bootstrap_proc(bootstrap_proc)
+        os.chdir(original_cwd)
 
 async def check_config_latency(parsed_creds):
     try:
@@ -375,6 +477,7 @@ async def main():
     await db.close()
     _runtime_session.release_reserved_ports()
     await pm.cleanup_child_processes()
+    await pm.cleanup_bootstrap_procs()
     if not DIAGNOSE_ONLY:
         await _net_manager.set_system_proxy(False)
 
@@ -400,5 +503,3 @@ if __name__ == "__main__":
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
         log("Shutdown complete.", "INFO")
-
-

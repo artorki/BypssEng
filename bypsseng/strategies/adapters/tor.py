@@ -1,8 +1,104 @@
-import os
-from strategies.base import Strategy
+import asyncio
 import logging
+import os
+
+from strategies.base import Strategy
 
 logger = logging.getLogger("NetAnalyzer")
+
+_bootstrap_logger = logging.getLogger("BootstrapTor")
+
+_SNOWFLAKE_BRIDGE_LINES = (
+    "Bridge snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.org,ajax.aspnetcdn.com ice=stun:stun.l.google.com:19302 utls-imitate=hellorandomizedalpn\n"
+    "Bridge snowflake 192.0.2.4:80 8838024498816A039B6BFE708B038F529C86E3B9 fingerprint=8838024498816A039B6BFE708B038F529C86E3B9 url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.org,ajax.aspnetcdn.com ice=stun:stun.l.google.com:19302 utls-imitate=hellorandomizedalpn\n"
+)
+
+
+async def start_bootstrap_tor(socks_port, tor_binary, snowflake_binary=None, data_dir=None, bootstrap_timeout=90.0):
+
+    if not tor_binary or not os.path.isfile(tor_binary):
+        _bootstrap_logger.warning("Bootstrap Tor: tor binary not found.")
+        return None, None
+
+    data_dir = data_dir or os.path.join(os.getcwd(), "bootstrap_tor")
+    os.makedirs(data_dir, exist_ok=True)
+    torrc_path = os.path.join(data_dir, "bootstrap_torrc")
+
+    def _tor_path(p): return p.replace("\\", "/")
+
+    torrc_lines = [
+        f"SocksPort 127.0.0.1:{socks_port}",
+        f'DataDirectory "{_tor_path(data_dir)}"',
+        "AvoidDiskWrites 1",
+        "Log notice stdout",
+    ]
+    if snowflake_binary and os.path.isfile(snowflake_binary):
+        torrc_lines.append("UseBridges 1")
+        torrc_lines.append(f'ClientTransportPlugin snowflake exec "{_tor_path(snowflake_binary)}"')
+        torrc_lines.extend(_SNOWFLAKE_BRIDGE_LINES.splitlines())
+
+    proc = None
+    try:
+        with open(torrc_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(torrc_lines) + "\n")
+
+        proc = await asyncio.create_subprocess_exec(
+            tor_binary, "-f", torrc_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=data_dir,
+        )
+
+        async def _drain(stream, label):
+            try:
+                while True:
+                    raw = await stream.readline()
+                    if not raw:
+                        break
+                    text = raw.decode(errors="ignore").strip()
+                    if any(k in text.lower() for k in ("error", "warn", "failed")):
+                        _bootstrap_logger.info(f"[bootstrap-tor:{label}] {text}")
+            except Exception:
+                pass
+
+        asyncio.create_task(_drain(proc.stderr, "STDERR"))
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + bootstrap_timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(f"Tor did not bootstrap within {bootstrap_timeout}s")
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            if not line:
+                raise RuntimeError("Tor exited before a circuit was established")
+            if b"Bootstrapped 100%" in line:
+                break
+
+        asyncio.create_task(_drain(proc.stdout, "STDOUT"))
+
+        socks_url = f"socks5://127.0.0.1:{socks_port}"
+        _bootstrap_logger.info(f"Bootstrap Tor is up at {socks_url}")
+        return proc, socks_url
+    except Exception as e:
+        _bootstrap_logger.warning(f"Bootstrap Tor could not be started: {e}")
+        await _terminate_bootstrap_proc(proc)
+        return None, None
+
+
+async def _terminate_bootstrap_proc(proc, timeout=10):
+
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+    except Exception as e:
+        _bootstrap_logger.debug(f"Bootstrap Tor termination error: {e}")
 
 
 class TorStrategy(Strategy):
@@ -29,7 +125,7 @@ class TorStrategy(Strategy):
                     f"UseBridges 1\n"
                     f"ClientTransportPlugin snowflake exec {snowflake_path}\n"
                     f"Bridge snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.org,ajax.aspnetcdn.com ice=stun:stun.l.google.com:19302 utls-imitate=hellorandomizedalpn\n"
-                    f"Bridge snowflake 192.0.2.4:80 8838024498816A039B6BFF4908B6020058B11D18 fingerprint=8838024498816A039B6BFF4908B6020058B11D18 url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.org,ajax.aspnetcdn.com ice=stun:stun.l.google.com:19302 utls-imitate=hellorandomizedalpn\n"
+                    f"Bridge snowflake 192.0.2.4:80 8838024498816A039B6BFE708B038F529C86E3B9 fingerprint=8838024498816A039B6BFE708B038F529C86E3B9 url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.org,ajax.aspnetcdn.com ice=stun:stun.l.google.com:19302 utls-imitate=hellorandomizedalpn\n"
                 )
                 config_name = "torrc_snowflake"
             elif lyrebird_path and os.path.isfile(lyrebird_path):

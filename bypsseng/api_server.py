@@ -6,6 +6,7 @@ import logging
 import secrets
 import asyncio
 import sys
+import time
 
 import telemetry.storage as telemetry
 import BypssEng
@@ -29,6 +30,14 @@ class WebSocketBroadcaster:
         self.clients.difference_update(dead_clients)
 
 broadcaster = WebSocketBroadcaster()
+
+async def broadcast_config_fetch_result(count: int, success: bool = True):
+
+    await broadcaster.broadcast("config_fetch_result", {
+        "ts": time.time(),
+        "count": count,
+        "success": success,
+    })
 
 @web.middleware
 async def auth_middleware(request, handler):
@@ -67,7 +76,6 @@ async def get_logs(request):
     return web.json_response(logs)
 
 async def get_configs(request):
-    """Returns the list of available configs so the user can see and select them."""
     cfg = BypssEng.load_unified_config()
     configs = []
     for link in cfg.get("configs", []):
@@ -108,7 +116,6 @@ async def test_config_api(request):
     return web.json_response({"parsed": {"protocol": parsed["protocol"]}, "latency": latency})
 
 async def manual_connect_api(request):
-    """Triggers manual connection to a specific config link."""
     data = await request.json()
     link = data.get("link")
     if not link: return web.json_response({"error": "Link required"}, status=400)
@@ -139,7 +146,7 @@ async def export_diagnostics(request):
         "decision_history": [],
     }
     if os.path.exists(BypssEng.REPORT_FILE):
-        with open(BypssEng.REPORT_FILE, "r") as f:
+        with open(BypssEng.REPORT_FILE, 'r') as f:
             diag_data["network_report"] = json.load(f)
             
     diag_data["recent_logs"] = await telemetry.db.get_recent_logs(500)

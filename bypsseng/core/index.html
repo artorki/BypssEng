@@ -129,6 +129,15 @@
         
         let diagnosisTimeline = [];
         let currentDiagnosis = null;
+
+        // ── Config-fetch result tracking ─────────────────────────────────
+        // Set by saveSub(); the next "config_fetch_result" WebSocket event
+        // (fired by the engine right after the background fetch cycle
+        // finishes) then replaces the static "fetching..." message with the
+        // real outcome: usable-config count or error.
+        let pendingFetchResult = false;
+        let fetchResultTimeoutId = null;
+        const FETCH_RESULT_TIMEOUT_MS = 10 * 60 * 1000; // safety net: 10 minutes
         
         const ConditionMapper = {
             'dns_ok': 'DNS سالم', 'dns_dropped': 'DNS قطع شده', 'dns_hijacked': 'DNS هیفجک شده',
@@ -148,6 +157,7 @@
             }
             else if (data.type === 'network_update') updateStatus(data.payload);
             else if (data.type === 'diagnosis_progress') updateDiagnosis(data.payload);
+            else if (data.type === 'config_fetch_result') handleFetchResult(data.payload);
         };
 
         async function fetchStatus() {
@@ -389,6 +399,33 @@
             }
         }
 
+        function handleFetchResult(payload) {
+            // A fetch cycle just rewrote cnfg.json — refresh the config list
+            // in every open dashboard, whether or not this tab is waiting
+            // for a result (covers automatic orchestrator fetches too).
+            fetchConfigs();
+
+            // Only this tab's pending saveSub() gets the detailed message;
+            // unrelated fetch events leave the status text untouched.
+            if (!pendingFetchResult) return;
+            pendingFetchResult = false;
+            if (fetchResultTimeoutId) { clearTimeout(fetchResultTimeoutId); fetchResultTimeoutId = null; }
+
+            const statusDiv = document.getElementById('sub-status');
+            const count = (payload && typeof payload.count === 'number') ? payload.count : 0;
+
+            if (payload && payload.success && count > 0) {
+                statusDiv.innerText = `دریافت کانفیگ‌ها کامل شد: ${count} کانفیگ قابل استفاده پیدا شد.`;
+                statusDiv.style.color = "var(--green)";
+            } else if (payload && payload.success) {
+                statusDiv.innerText = "دریافت کانفیگ‌ها کامل شد، اما هیچ کانفیگ قابل استفاده‌ای پیدا نشد.";
+                statusDiv.style.color = "var(--yellow)";
+            } else {
+                statusDiv.innerText = "دریافت کانفیگ‌ها با خطا مواجه شد. جزئیات در لاگ‌های سیستم.";
+                statusDiv.style.color = "var(--red)";
+            }
+        }
+
         async function saveSub() {
             const url = document.getElementById('sub-url').value;
             if(!url) return;
@@ -403,10 +440,26 @@
                 });
                 const data = await res.json();
                 if(res.ok) {
-                    statusDiv.innerText = "لینک ذخیره شد. در حال دریافت کانفیگ‌ها در پس‌زمینه...";
+                    // No static "done" message anymore: mark this tab as
+                    // waiting and let the config_fetch_result WebSocket event
+                    // (handleFetchResult) show the real outcome — config
+                    // count or error — exactly when the engine finishes.
+                    pendingFetchResult = true;
+                    statusDiv.innerText = "لینک ذخیره شد. در حال دریافت کانفیگ‌ها... (نتیجه پس از پایان دریافت نمایش داده می‌شود)";
                     statusDiv.style.color = "var(--green)";
-                    // Refresh config list after 10 seconds to allow fetching
-                    setTimeout(fetchConfigs, 10000);
+
+                    // Safety net: if no event ever arrives (older engine
+                    // build without the broadcast, or a dropped socket),
+                    // stop waiting after FETCH_RESULT_TIMEOUT_MS.
+                    if (fetchResultTimeoutId) clearTimeout(fetchResultTimeoutId);
+                    fetchResultTimeoutId = setTimeout(() => {
+                        fetchResultTimeoutId = null;
+                        if (!pendingFetchResult) return;
+                        pendingFetchResult = false;
+                        statusDiv.innerText = "مهلت انتظار برای نتیجه‌ی دریافت به پایان رسید. نتیجه را در لاگ‌های سیستم بررسی کنید.";
+                        statusDiv.style.color = "var(--red)";
+                        fetchConfigs();
+                    }, FETCH_RESULT_TIMEOUT_MS);
                 } else {
                     throw new Error(data.error);
                 }
