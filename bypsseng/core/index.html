@@ -187,24 +187,45 @@
                     const data = await res.json();
                     const listDiv = document.getElementById('config-list');
                     listDiv.innerHTML = '';
-                    
-                    if (!data.configs || data.configs.length === 0) {
+
+                    // Render personal and collected configs as two separate labeled groups.
+                    const groups = [
+                        { label: 'شخصی', configs: data.personal_configs || [] },
+                        { label: 'جمع‌آوری‌شده', configs: data.collected_configs || [] }
+                    ];
+
+                    if (groups.every(g => g.configs.length === 0)) {
                         listDiv.innerHTML = '<div style="color:var(--muted)">هنوز کانفیگی موجود نیست. ساب‌اسکریپشن اضافه کنید یا منتظر دریافت خودکار بمانید.</div>';
                         return;
                     }
-                    
-                    data.configs.forEach(c => {
-                        const item = document.createElement('div');
-                        item.className = 'config-item';
-                        const encodedLink = btoa(c.link);
-                        item.innerHTML = `
-                            <div>
-                                <span class="badge ok" style="margin-left:10px;">${c.protocol}</span>
-                                <span style="font-size: 13px;">${c.host}:${c.port}</span>
-                            </div>
-                            <button onclick="connectManual('${encodedLink}')">اتصال</button>
-                        `;
-                        listDiv.appendChild(item);
+
+                    groups.forEach(g => {
+                        const groupHeader = document.createElement('div');
+                        groupHeader.style.cssText = 'font-size:12px; font-weight:bold; color:var(--muted); margin:10px 0 5px;';
+                        groupHeader.innerText = `${g.label} (${g.configs.length})`;
+                        listDiv.appendChild(groupHeader);
+
+                        if (g.configs.length === 0) {
+                            const emptyNote = document.createElement('div');
+                            emptyNote.style.cssText = 'font-size:12px; color:var(--muted); padding-bottom:5px;';
+                            emptyNote.innerText = 'کانفیگی در این دسته موجود نیست.';
+                            listDiv.appendChild(emptyNote);
+                            return;
+                        }
+
+                        g.configs.forEach(c => {
+                            const item = document.createElement('div');
+                            item.className = 'config-item';
+                            const encodedLink = btoa(c.link);
+                            item.innerHTML = `
+                                <div>
+                                    <span class="badge ok" style="margin-left:10px;">${c.protocol}</span>
+                                    <span style="font-size: 13px;">${c.host}:${c.port}</span>
+                                </div>
+                                <button onclick="connectManual('${encodedLink}')">اتصال</button>
+                            `;
+                            listDiv.appendChild(item);
+                        });
                     });
                 }
             } catch(e) {}

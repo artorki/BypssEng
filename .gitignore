@@ -2,19 +2,12 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.egg-info/
-.venv/
-venv/
+
+# Binaries (Users must download them manually)
+bypsseng/bin/
 
 # Runtime Data (Logs, DBs, generated configs, user subs)
-*.db
-*.sqlite3
-
-# OS files
-Thumbs.db
-Desktop.ini
-.DS_Store
-# bypsseng/Data/
+bypsseng/Data/
 
 # OS generated files
 .DS_Store

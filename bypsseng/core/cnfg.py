@@ -13,15 +13,17 @@ import ssl
 import logging
 import platform
 from urllib.parse import urlparse, parse_qs, unquote
+from aiohttp.resolver import ThreadedResolver
 
 from core.utils import parse_config_link
 
 try:
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import serialization
-except ImportError:
-    logging.getLogger("ConfigFetcher").error("Error: 'cryptography' is not installed.")
-    sys.exit(1)
+    from cryptography.hazmat.primitives import serialization
+    CRYPTOGRAPHY_AVAILABLE = True
+except ImportError as e:
+    CRYPTOGRAPHY_AVAILABLE = False
+    logging.getLogger("ConfigFetcher").error(f"cryptography import failed: {e!r}")
 
 logger = logging.getLogger("ConfigFetcher")
 
@@ -69,7 +71,7 @@ HARDCODED_DNS = {
     "api.cloudflareclient.com": ["162.159.192.1", "162.159.193.1", "188.114.96.1", "188.114.97.1", "104.16.0.1", "104.17.0.1"]
 }
 
-class ForceIPResolver(aiohttp.DefaultResolver):
+class ForceIPResolver(ThreadedResolver):
     def __init__(self, target_ip=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.target_ip = target_ip
@@ -78,6 +80,9 @@ class ForceIPResolver(aiohttp.DefaultResolver):
         if host in HARDCODED_DNS and self.target_ip:
             return [{"hostname": host, "host": self.target_ip, "port": port, "family": socket.AF_INET, "proto": socket.IPPROTO_TCP, "flags": socket.AI_NUMERICHOST}]
         return await super().resolve(host, port, family)
+
+def _os_resolver_connector():
+    return aiohttp.TCPConnector(resolver=ThreadedResolver())
 
 def get_windows_proxy():
     if platform.system().lower() != 'windows': return None
@@ -193,9 +198,9 @@ def deduplicate_configs(links):
         else: unique_links.append(link)
     return unique_links
 
-latency_sem = asyncio.Semaphore(50)
+latency_sem = asyncio.Semaphore(150)
 
-async def test_tcp_latency(host, port, timeout=1.5):
+async def test_tcp_latency(host, port, timeout=1.0):
     start = time.time()
     try:
         async with latency_sem:
@@ -205,12 +210,12 @@ async def test_tcp_latency(host, port, timeout=1.5):
             return latency
     except: return None
 
-async def test_tls_handshake(host, port, sni):
+async def test_tls_handshake(host, port, sni, timeout=1.5):
     if not sni: return False
     try:
         ssl_ctx = ssl.create_default_context(); ssl_ctx.check_hostname = False; ssl_ctx.verify_mode = ssl.CERT_NONE
         async with latency_sem:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(host=host, port=port, ssl=ssl_ctx, server_hostname=sni), timeout=2.0)
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host=host, port=port, ssl=ssl_ctx, server_hostname=sni), timeout=timeout)
             writer.close(); await writer.wait_closed()
             return True
     except: return False
@@ -258,13 +263,15 @@ async def fetch_from_url(url, proxy_url=None):
     proxy = get_windows_proxy()
     timeout = aiohttp.ClientTimeout(total=15)
     headers = {"User-Agent": "Mozilla/5.0"}
-    
+    last_error = None
+
     if proxy:
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+            async with aiohttp.ClientSession(timeout=timeout, connector=_os_resolver_connector(), trust_env=False) as session:
                 async with session.get(url, headers=headers, proxy=proxy) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
+            last_error = e
             logger.debug(f"Fetch via proxy failed for {url}: {e}")
 
     if "raw.githubusercontent.com" in url:
@@ -277,14 +284,16 @@ async def fetch_from_url(url, proxy_url=None):
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
+            last_error = e
             logger.debug(f"Direct GitHub fetch failed for {url}: {e}")
 
         jsdelivr_url = url.replace("https://raw.githubusercontent.com/", "https://cdn.jsdelivr.net/gh/").replace("/main/", "@main/").replace("/master/", "@master/")
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+            async with aiohttp.ClientSession(timeout=timeout, connector=_os_resolver_connector(), trust_env=False) as session:
                 async with session.get(jsdelivr_url, headers=headers) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
+            last_error = e
             logger.debug(f"jsDelivr fetch failed for {url}: {e}")
 
         try:
@@ -296,6 +305,7 @@ async def fetch_from_url(url, proxy_url=None):
                 async with session.get(jsdelivr_url, headers=headers) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
+            last_error = e
             logger.debug(f"jsDelivr (hardcoded IP) fetch failed for {url}: {e}")
 
         try:
@@ -304,14 +314,16 @@ async def fetch_from_url(url, proxy_url=None):
                 async with session.get(githack_url, headers=headers) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
+            last_error = e
             logger.debug(f"githack fetch failed for {url}: {e}")
             
     else:
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+            async with aiohttp.ClientSession(timeout=timeout, connector=_os_resolver_connector(), trust_env=False) as session:
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
+            last_error = e
             logger.debug(f"Direct fetch failed for {url}: {e}")
 
     if proxy_url:
@@ -322,9 +334,11 @@ async def fetch_from_url(url, proxy_url=None):
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200: return await resp.text()
         except Exception as e:
+            last_error = e
             logger.debug(f"Bootstrap-proxy fetch failed for {url}: {e}")
 
-    logger.warning(f"Failed to fetch from {url}")
+    reason = f" (last error: {last_error!r})" if last_error else ""
+    logger.warning(f"Failed to fetch from {url}{reason}")
     return None
 
 async def fetch_public_configs(bootstrap_proxy=None):
@@ -339,7 +353,8 @@ async def fetch_public_configs(bootstrap_proxy=None):
     return alive_links
 
 async def main(override_urls=None, bootstrap_proxy: str = None):
-    output_data = {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None, "psiphon": None, "dnstt": None}
+    output_data = {"personal_configs": [], "collected_configs": [], "subscription_urls": [],
+                    "warp": None, "cloudflare_worker": None, "psiphon": None, "dnstt": None}
 
     if bootstrap_proxy:
         logger.info(f"Bootstrap proxy active for this fetch cycle: {bootstrap_proxy}")
@@ -348,46 +363,48 @@ async def main(override_urls=None, bootstrap_proxy: str = None):
         try:
             with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
-                if "warp" in existing_data and existing_data["warp"]: output_data["warp"] = existing_data["warp"]
-                if "cloudflare_worker" in existing_data and existing_data["cloudflare_worker"]: output_data["cloudflare_worker"] = existing_data["cloudflare_worker"]
-                if "subscription_urls" in existing_data and existing_data["subscription_urls"]: output_data["subscription_urls"] = existing_data["subscription_urls"]
+                for k in ("warp", "cloudflare_worker", "subscription_urls"):
+                    if existing_data.get(k): output_data[k] = existing_data[k]
         except Exception as e: logger.warning(f"Could not read existing file: {e}")
 
     user_subs = override_urls if override_urls is not None else output_data.get("subscription_urls", [])
     output_data["subscription_urls"] = user_subs
-    all_links = []
 
+    personal_links = []
+    personal_fetch_ok = True
     if user_subs:
         logger.info("Fetching user custom subscriptions...")
         tasks = [fetch_from_url(url, proxy_url=bootstrap_proxy) for url in user_subs]
         results = await asyncio.gather(*tasks)
+        personal_fetch_ok = any(r is not None for r in results)
         for content in results:
-            if content: all_links.extend(extract_configs_from_text(content))
-        
-        if all_links:
-            output_data["configs"] = deduplicate_configs(list(set(all_links)))
-            atomic_write_json(OUTPUT_FILE, output_data)
-            logger.info("User subs saved temporarily. Fetching public configs...")
+            if content: personal_links.extend(extract_configs_from_text(content))
 
-    public_links = await fetch_public_configs(bootstrap_proxy=bootstrap_proxy)
-    all_links.extend(public_links)
-    
-    if all_links: 
-        unique_combined = deduplicate_configs(list(set(all_links)))
-        alive_links = await filter_alive_configs(unique_combined)
-        if alive_links:
-            output_data["configs"] = alive_links
-            if not output_data["cloudflare_worker"]:
-                worker = extract_cloudflare_worker(alive_links)
-                if worker: output_data["cloudflare_worker"] = worker
+    if personal_links:
+        output_data["personal_configs"] = await filter_alive_configs(
+            deduplicate_configs(list(set(personal_links)))
+        )
+        personal_fetch_ok = len(output_data["personal_configs"]) > 0
+        atomic_write_json(OUTPUT_FILE, output_data)
+        logger.info(f"Personal configs saved ({len(output_data['personal_configs'])}). Fetching public configs...")
+
+    output_data["_personal_fetch_ok"] = personal_fetch_ok
+
+    collected_links = await fetch_public_configs(bootstrap_proxy=bootstrap_proxy)
+    output_data["collected_configs"] = collected_links
+
+    all_alive = output_data["personal_configs"] + output_data["collected_configs"]
+    if all_alive and not output_data["cloudflare_worker"]:
+        worker = extract_cloudflare_worker(all_alive)
+        if worker: output_data["cloudflare_worker"] = worker
 
     if not output_data["warp"]:
         warp_keys = await auto_register_warp()
         if warp_keys: output_data["warp"] = warp_keys
 
     atomic_write_json(OUTPUT_FILE, output_data)
-    logger.info("Data saved successfully.")
-    logger.info(f"Fetch cycle finished: {len(output_data['configs'])} usable configs saved.")
+    logger.info(f"Fetch cycle finished: {len(output_data['personal_configs'])} personal / {len(output_data['collected_configs'])} collected configs saved.")
+    return output_data
 
 if __name__ == "__main__":
     asyncio.run(main())

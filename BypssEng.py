@@ -45,6 +45,8 @@ logger = logging.getLogger("NetAnalyzer")
 DIAGNOSE_ONLY = False
 
 _direct_fetch_failed = False
+_fetch_lock = asyncio.Lock()
+_fetch_task = None
 
 config_fetch_result_callback = None
 
@@ -64,13 +66,15 @@ BINARY_PATHS = {
 }
 
 def load_unified_config():
+    default = {"personal_configs": [], "collected_configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None}
     if not os.path.exists(UNIFIED_CONFIG_FILE):
-        return {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None}
+        return default
     try:
         with open(UNIFIED_CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            return {**default, **data}
     except Exception:
-        return {"configs": [], "subscription_urls": [], "warp": None, "cloudflare_worker": None}
+        return default
 
 def generate_network_report(states, applied_bypass="none", diagnosis=None, selected_method=None):
     if not diagnosis:
@@ -129,16 +133,16 @@ def _has_usable_configs():
     try:
         with open(UNIFIED_CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return len(data.get("configs", [])) > 0
+        return len(data.get("personal_configs", [])) > 0 or len(data.get("collected_configs", [])) > 0
     except Exception:
         return False
 
 def _notify_config_fetch_result(success=True):
-
     if config_fetch_result_callback is None:
         return
     try:
-        count = len(load_unified_config().get("configs", []))
+        cfg = load_unified_config()
+        count = len(cfg.get("personal_configs", [])) + len(cfg.get("collected_configs", []))
         config_fetch_result_callback(count, success)
     except Exception as e:
         logger.debug(f"Config fetch result callback failed: {e}")
@@ -166,82 +170,92 @@ async def _launch_bootstrap_tor(bootstrap_timeout=90):
 
 async def fetch_fresh_configs(wait=True):
 
-    log("Attempting to fetch fresh configs...", "SOL")
-    original_cwd = os.getcwd()
+    global _fetch_task
+    if _fetch_lock.locked():
+        log("A config fetch is already in progress; skipping this cycle.", "WARN")
+        return False
 
-    needs_bootstrap = _direct_fetch_failed
+    async def _job():
+        global _direct_fetch_failed
+        async with _fetch_lock:
+            log("Attempting to fetch fresh configs...", "SOL")
+            original_cwd = os.getcwd()
+            bootstrap_proc = None
+            bootstrap_proxy = None
 
-    bootstrap_proc = None
-    bootstrap_proxy = None
-    tor_owned_by_task = False
-
-    try:
-        os.chdir(DATA_DIR)
-        sys.path.insert(0, CORE_DIR)
-        import cnfg
-
-        if needs_bootstrap:
-            if importlib.util.find_spec("aiohttp_socks") is None:
-                log("Bootstrap proxy needs the 'aiohttp_socks' package (pip install aiohttp_socks); retrying direct fetch.", "WARN")
-            else:
-                log("Previous direct fetch failed. Starting temporary Tor bootstrap proxy...", "WARN")
-                bootstrap_proc, bootstrap_proxy = await _launch_bootstrap_tor()
-                if bootstrap_proxy:
-                    log(f"Bootstrap SOCKS proxy ready at {bootstrap_proxy}", "PASS")
-                else:
-                    log("Bootstrap proxy unavailable; retrying direct fetch.", "WARN")
-
-        async def run_cnfg():
-            global _direct_fetch_failed
-            saved_cwd = os.getcwd()
-            fetch_ok = False
             try:
                 os.chdir(DATA_DIR)
-                await cnfg.main(bootstrap_proxy=bootstrap_proxy)
-                log("Background config fetch completed successfully.", "PASS")
-                _direct_fetch_failed = not _has_usable_configs()
-                fetch_ok = True
-            except Exception as e:
-                log(f"Background config fetch failed: {e}", "ERROR")
-                _direct_fetch_failed = True
-            finally:
-                os.chdir(saved_cwd)
-                await pm.stop_bootstrap_proc(bootstrap_proc)
-                _notify_config_fetch_result(success=fetch_ok)
+                if CORE_DIR not in sys.path:
+                    sys.path.insert(0, CORE_DIR)
 
-        if wait:
-            await run_cnfg()
-        else:
-            tor_owned_by_task = True
-            asyncio.create_task(run_cnfg())
-        return True
-    except ImportError as e:
-        log(f"Failed to import cnfg module: {e}. Falling back to subprocess.", "WARN")
-        import subprocess
-        cmd = [sys.executable, os.path.join(CORE_DIR, "cnfg.py")]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, 
-                stdout=asyncio.subprocess.PIPE, 
-                stderr=asyncio.subprocess.PIPE, 
-                cwd=DATA_DIR
-            )
-            if wait:
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    err_msg = stderr.decode(errors='ignore')
-                    log(f"cnfg.py subprocess failed: {err_msg}", "ERROR")
+                try:
+                    import cnfg
+                except SystemExit:
+                    log("cnfg aborted during import (missing/broken dependency).", "ERROR")
+                    log("Fix: python -m pip install cryptography aiohttp aiohttp_socks", "SOL")
+                    _direct_fetch_failed = True
                     _notify_config_fetch_result(success=False)
-                else:
-                    log("cnfg.py subprocess completed successfully.", "PASS")
-                    _notify_config_fetch_result(success=True)
-        except Exception as e:
-            log(f"Failed to run cnfg subprocess: {e}", "ERROR")
-        return True
-    finally:
-        if bootstrap_proc is not None and not tor_owned_by_task:
-            await pm.stop_bootstrap_proc(bootstrap_proc)
-        os.chdir(original_cwd)
+                    return
+
+                if _direct_fetch_failed:
+                    if importlib.util.find_spec("aiohttp_socks") is None:
+                        log("Bootstrap proxy needs the 'aiohttp_socks' package (pip install aiohttp_socks); retrying direct fetch.", "WARN")
+                    else:
+                        log("Previous direct fetch failed. Starting temporary Tor bootstrap proxy...", "WARN")
+                        bootstrap_proc, bootstrap_proxy = await _launch_bootstrap_tor()
+                        if bootstrap_proxy:
+                            log(f"Bootstrap SOCKS proxy ready at {bootstrap_proxy}", "PASS")
+                        else:
+                            log("Bootstrap proxy unavailable; retrying direct fetch.", "WARN")
+
+                saved_cwd = os.getcwd()
+                fetch_ok = False
+                try:
+                    os.chdir(DATA_DIR)
+                    result = await cnfg.main(bootstrap_proxy=bootstrap_proxy)
+                    log("Background config fetch completed successfully.", "PASS")
+                    personal_ok = result.get("_personal_fetch_ok", True) if isinstance(result, dict) else True
+                    _direct_fetch_failed = not personal_ok
+                    fetch_ok = True
+                except SystemExit:
+                    log("Config fetcher exited unexpectedly (SystemExit).", "ERROR")
+                    _direct_fetch_failed = True
+                except Exception as e:
+                    log(f"Background config fetch failed: {e}", "ERROR")
+                    _direct_fetch_failed = True
+                finally:
+                    os.chdir(saved_cwd)
+                    _notify_config_fetch_result(success=fetch_ok)
+
+            except ImportError as e:
+                log(f"Failed to import cnfg module: {e}. Falling back to subprocess.", "WARN")
+                cmd = [sys.executable, os.path.join(CORE_DIR, "cnfg.py")]
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd, 
+                        stdout=asyncio.subprocess.PIPE, 
+                        stderr=asyncio.subprocess.PIPE, 
+                        cwd=DATA_DIR
+                    )
+                    stdout, stderr = await proc.communicate()
+                    if proc.returncode != 0:
+                        err_msg = stderr.decode(errors='ignore')
+                        log(f"cnfg.py subprocess failed: {err_msg}", "ERROR")
+                        _notify_config_fetch_result(success=False)
+                    else:
+                        log("cnfg.py subprocess completed successfully.", "PASS")
+                        _notify_config_fetch_result(success=True)
+                except Exception as e:
+                    log(f"Failed to run cnfg subprocess: {e}", "ERROR")
+            finally:
+                await pm.stop_bootstrap_proc(bootstrap_proc)
+                os.chdir(original_cwd)
+
+    if wait:
+        await _job()
+    else:
+        _fetch_task = asyncio.create_task(_job())
+    return True
 
 async def check_config_latency(parsed_creds):
     try:
@@ -284,13 +298,18 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
             BINARY_PATHS
         )
         if not strategy:
+            log(f"No strategy/binary available for '{creds['protocol']}'. "
+                f"Put the required binary (e.g. xray.exe) in: {BIN_DIR}", "WARN")
             await restore_state_on_failure()
             return False
 
         config_file, binary_name = await strategy.prepare()
         if not config_file:
+            log(f"Strategy '{creds['protocol']}' failed to prepare its config file.", "WARN")
             await restore_state_on_failure()
             return False
+
+        runtime_session.release_binding_sockets()
 
         try:
             strategy._config_file = config_file
@@ -361,56 +380,51 @@ async def execute_bypass_and_connect(creds, dpi_state, runtime_session: RuntimeS
 
 async def bypass_executor_wrapper(states, diagnosis_result, runtime_session, net_manager, db, adaptive_stats):
     log(f"Executing bypass based on diagnosis: {diagnosis_result.condition}", "SOL")
-    
     unified_cfg = load_unified_config()
-    config_links = unified_cfg.get("configs", [])
-    parsed_configs = [parse_config_link(link) for link in config_links]
-    valid_configs = [c for c in parsed_configs if c["protocol"] != "unsupported"]
-    
-    if unified_cfg.get("warp"): 
-        clean_ips = await scan_clean_cdn_ips(cdn_provider="cloudflare", worker_host="engage.cloudflareclient.com", worker_path="/", count=3)
-        if clean_ips:
-            log(f"Found {len(clean_ips)} clean Cloudflare IPs for WARP. Adding WARP as primary fallback.", "SOL")
-            valid_configs.insert(0, {"protocol": "warp", "warp_data": unified_cfg["warp"], "custom_endpoint": f"{clean_ips[0]}:2408"})
-        else:
-            valid_configs.append({"protocol": "warp", "warp_data": unified_cfg["warp"]})
-            
-    if unified_cfg.get("cloudflare_worker"): 
-        valid_configs.append({"protocol": "cloudflare_worker", "worker_data": unified_cfg["cloudflare_worker"]})
-    if BINARY_PATHS.get("psiphon"): 
-        valid_configs.append({"protocol": "psiphon"})
-    if BINARY_PATHS.get("dnstt-client") and unified_cfg.get("dnstt"): 
-        valid_configs.append({"protocol": "dnstt", "dnstt_domain": unified_cfg["dnstt"].get("domain"), "dnstt_pubkey": unified_cfg["dnstt"].get("pubkey")})
-        
-    valid_configs.extend([{"protocol": "tor_proxy"}, {"protocol": "tor_snowflake"}])
 
-    scored_candidates = []
-    for c in valid_configs:
-        score = await score_strategy(c["protocol"], states, db, adaptive_stats)
-        scored_candidates.append((c, score))
-    scored_candidates.sort(key=lambda x: x[1].score, reverse=True)
-    
-    alternatives = {}
-    selected_strategy = None
-    explanation_evidence = []
-    
-    for creds, score in scored_candidates:
+    async def score_all(creds_list):
+        scored = []
+        for c in creds_list:
+            score = await score_strategy(c["protocol"], states, db, adaptive_stats)
+            scored.append((c, score))
+        scored.sort(key=lambda x: x[1].score, reverse=True)
+        return scored
+
+    tier1 = [c for c in (parse_config_link(l) for l in unified_cfg.get("personal_configs", [])) if c["protocol"] != "unsupported"]
+    tier2 = [c for c in (parse_config_link(l) for l in unified_cfg.get("collected_configs", [])) if c["protocol"] != "unsupported"]
+    if unified_cfg.get("cloudflare_worker"):
+        tier2.append({"protocol": "cloudflare_worker", "worker_data": unified_cfg["cloudflare_worker"]})
+
+    tier3 = []
+    if unified_cfg.get("warp"):
+        clean_ips = await scan_clean_cdn_ips(cdn_provider="cloudflare", worker_host="engage.cloudflareclient.com", worker_path="/", count=3)
+        tier3.append({"protocol": "warp", "warp_data": unified_cfg["warp"],
+                       **({"custom_endpoint": f"{clean_ips[0]}:2408"} if clean_ips else {})})
+    if BINARY_PATHS.get("psiphon"):
+        tier3.append({"protocol": "psiphon"})
+    if BINARY_PATHS.get("dnstt-client") and unified_cfg.get("dnstt"):
+        tier3.append({"protocol": "dnstt", "dnstt_domain": unified_cfg["dnstt"].get("domain"), "dnstt_pubkey": unified_cfg["dnstt"].get("pubkey")})
+    tier3.extend([{"protocol": "tor_proxy"}, {"protocol": "tor_snowflake"}])
+
+    ordered_candidates = []
+    for tier in (tier1, tier2, tier3):
+        ordered_candidates.extend(await score_all(tier))
+
+    alternatives, selected_strategy, explanation_evidence = {}, None, []
+    for creds, score in ordered_candidates:
         if score.score > 0.1 or creds["protocol"] in ["tor_proxy", "tor_snowflake", "psiphon", "dnstt", "warp"]:
             log(f"Attempting strategy: {creds['protocol']} (Score: {score.score:.2f})", "INFO")
             success = await execute_bypass_and_connect(creds, states.get('dpi'), runtime_session, net_manager)
             if success:
-                selected_strategy = creds["protocol"]
-                explanation_evidence = score.reasons
+                selected_strategy, explanation_evidence = creds["protocol"], score.reasons
                 await db.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, True)
                 break
-            else:
-                alternatives[creds["protocol"]] = score.score
-                await db.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, False)
-                
+            alternatives[creds["protocol"]] = score.score
+            await db.record_strategy_outcome(creds["protocol"], diagnosis_result.condition, False)
+
     if selected_strategy:
         generate_network_report(states, f"connected_via_{selected_strategy}", [diagnosis_result.condition], selected_strategy)
         return True, DecisionExplanation(selected=selected_strategy, alternatives=alternatives, evidence=explanation_evidence)
-    
     generate_network_report(states, "failed", [diagnosis_result.condition], "failed")
     return False, None
 

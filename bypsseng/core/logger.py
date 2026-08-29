@@ -39,39 +39,19 @@ def log(msg, type="INFO", color_override=None):
     logger.log(log_type_map.get(type, logging.INFO), msg)
 
 class BroadcastLogHandler(logging.Handler):
-
     _LEVEL_MAP = {
-    logging.DEBUG: "TRACE", logging.INFO: "INFO",
-    logging.WARNING: "WARN", logging.ERROR: "FAIL",
-    logging.CRITICAL: "FAIL",
-}
-
+        logging.DEBUG: "TRACE", logging.INFO: "INFO",
+        logging.WARNING: "WARN", logging.ERROR: "FAIL",
+        logging.CRITICAL: "FAIL", TRACE_LEVEL_NUM: "TRACE",
+    }
     def __init__(self, sink):
         super().__init__()
         self.sink = sink
-
     def emit(self, record):
         try:
             self.sink(record.getMessage(), self._LEVEL_MAP.get(record.levelno, "INFO"))
         except Exception:
             pass
-
-    def __init__(self, hooked_log_func):
-        super().__init__()
-        self.hooked_log_func = hooked_log_func
-
-    def emit(self, record):
-        try:
-            type_map = {
-                logging.INFO: "INFO", logging.WARNING: "WARN",
-                logging.ERROR: "FAIL", logging.DEBUG: "TRACE",
-                TRACE_LEVEL_NUM: "TRACE"
-            }
-            self.hooked_log_func(record.getMessage(), type_map.get(record.levelno, "INFO"))
-        except Exception:
-            pass
-
-    
 
 def setup_file_logging(log_file="netanalyzer.log", level=logging.DEBUG,
                        maxBytes=5 * 1024 * 1024, backupCount=3):

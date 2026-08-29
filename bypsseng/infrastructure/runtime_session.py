@@ -4,7 +4,6 @@ from typing import Optional, Dict
 
 logger = logging.getLogger("NetAnalyzer")
 
-
 class RuntimeSession:
 
     def __init__(self):
@@ -51,3 +50,11 @@ class RuntimeSession:
         self.local_socks_port = None
         self.local_http_port = None
         self.auxiliary_ports.clear()
+
+    def release_binding_sockets(self):
+        for s in self._reserved_sockets:
+            try:
+                s.close()
+            except Exception as e:
+                logger.debug(f"Error closing reserved port socket: {e}")
+        self._reserved_sockets.clear()

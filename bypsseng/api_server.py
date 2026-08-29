@@ -77,20 +77,20 @@ async def get_logs(request):
 
 async def get_configs(request):
     cfg = BypssEng.load_unified_config()
-    configs = []
-    for link in cfg.get("configs", []):
-        parsed = BypssEng.parse_config_link(link)
-        if parsed["protocol"] != "unsupported":
-            proto = parsed["protocol"]
-            configs.append({
-                "protocol": proto,
-                "host": parsed.get(f"{proto}_server_ip"),
-                "port": parsed.get(f"{proto}_port"),
-                "link": link
-            })
-            
+
+    def build(links):
+        out = []
+        for link in links:
+            parsed = BypssEng.parse_config_link(link)
+            if parsed["protocol"] != "unsupported":
+                proto = parsed["protocol"]
+                out.append({"protocol": proto, "host": parsed.get(f"{proto}_server_ip"),
+                             "port": parsed.get(f"{proto}_port"), "link": link})
+        return out
+
     return web.json_response({
-        "configs": configs,
+        "personal_configs": build(cfg.get("personal_configs", [])),
+        "collected_configs": build(cfg.get("collected_configs", [])),
         "warp": bool(cfg.get("warp")),
         "subscription_urls": cfg.get("subscription_urls", [])
     })

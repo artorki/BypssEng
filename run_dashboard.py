@@ -31,6 +31,9 @@ async def main():
     runtime_session = RuntimeSession()
     runtime_session.setup_dynamic_ports()
 
+    BypssEng._runtime_session = runtime_session
+    BypssEng._net_manager = net_manager
+
     db = TelemetryDB(BypssEng.DB_PATH)
     await db.init()
     await db.cleanup_old_logs()
@@ -60,7 +63,9 @@ async def main():
 
     BypssEng.log = hooked_log
 
-    logging.getLogger("NetAnalyzer").propagate = False
+    netanalyzer_logger = logging.getLogger("NetAnalyzer")
+    netanalyzer_logger.propagate = False
+    netanalyzer_logger.addHandler(logging.NullHandler())
 
     logging.getLogger().addHandler(BroadcastLogHandler(hooked_log))
     logging.getLogger().setLevel(logging.INFO)
